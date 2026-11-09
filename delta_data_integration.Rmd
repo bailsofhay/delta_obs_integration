@@ -1,0 +1,862 @@
+---
+title: "Delta Data Integration Mess-around"
+author: "Bailey Morrison & Maria Contreras"
+date: "2026-03-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+# libraries needed
+require(terra)
+# library(tidyverse)
+require(tidyterra)
+require(kableExtra)
+require(openxlsx)
+```
+
+#All shapefiles that have been created in the delta
+
+IMPORTANT: Please change out the file path (Line 27-) to the directory on you computer the shapefiles are located. Please do the same thing on line 671 and 769 so your output file is exported to the correct location.
+
+```{r}
+# change file directory path
+files = list.files(path = "C://Users/bdmor/Box/NASA-IAV/classification/data/model_inputs/shapefiles/maria_cstars_all_field_data/",
+                     pattern = ".shp", include.dirs = T, full.names = T, recursive = T)
+files = files[-grep(".xml", files)]
+
+```
+
+#Break apart shapefiles by line or point
+```{r}
+pt_files = files[grep("pts|point", files, perl = T)]
+ln_files = files[grep("line", files)]
+#print (pt_files)
+```
+
+# Start analysis on point shapefiles
+
+Names I already know are the same field, but with spelling/format difference
+# Names that need to be corrected to match similar field:
+```{r}
+# bad_names = data.frame(wrong = "Comment", correct = "Comments")
+
+```
+
+# Get a dataframe of all column names by year
+```{r, warning=FALSE, message=FALSE}
+pt_names = data.frame()
+
+for (i in 1:length(pt_files)){
+  dat = vect(pt_files[i])
+  dat_name = basename(pt_files[i])
+  name_ind = regexpr("[0-9]{4}", dat_name, perl = T) # pull out the year from file name
+  yr = as.numeric(substr(dat_name, name_ind, name_ind+3))
+  
+  out = data.frame(year = yr, col_names = names(dat))
+  pt_names = rbind(pt_names, out)
+}
+```
+
+
+
+# Count the number of times the same column name appears in all shapefile dates
+```{r}
+colnames_count = pt_names %>%
+  dplyr::summarise(n = dplyr::n(), .by = c(col_names))
+
+#write.csv(colnames_count, "colnames_count.csv", row.names = FALSE)
+
+```
+
+#There are 12 point files. If a column name is the same in all years, then the count should be 12. 
+
+# List of common column names across all shapefiles
+```{r}
+# there are 12 pt files. which names are repeated 12 times
+x = which(colnames_count$n == 12)
+cn_all = colnames_count[x,]
+names(cn_all) = c("Col_Name", "Count")
+row.names(cn_all) = NULL
+print(paste("There are", nrow(cn_all), "fields with the same column names", 
+            sep = " "))
+```
+
+
+# List of common column names across all shapefiles
+```{r}
+kable(cn_all)
+```
+
+```{r}
+cn_missing = colnames_count[which(colnames_count$n < 12), ]
+names(cn_missing) = c("Col_Name", "Count")
+row.names(cn_missing) = NULL
+
+print(paste("There are", nrow(cn_missing), "fields with different column names", 
+            sep = " "))
+```
+
+
+# List of column names not common among all shapefiles
+```{r}
+kable(cn_missing[order(cn_missing$Count, decreasing = TRUE), ])
+```
+
+
+
+# Names that we DO NOT NEED 100%:
+```{r}
+remove = c("Northing", "Easting", "Feat_Name", "Datafile", "GPS_Week",
+           "GPS_Second", "Point_ID", "Data_Dicti", "POINT_X", "POINT_Y", "Filt_pos", "Unfilt_Pos", "Treated",
+           "Corr_Type", "Max_PDOP", "Horz_Prec", "Point_ID", "Max_HDOP", "Rcvr_Type", "Team",
+           "Lifeform", "Nutrient_I", "GNSS_Heigh"	)
+```
+
+
+# Iterates through all point shapefiles, loads each dataset using `terra::vect()`, and extracts the year from the filename using a regex pattern (`[0-9]{4}`). It standardizes attribute fields by merging values from `Comment` into `Comments` when present and then removing the original `Comment` field. It removes non-essential attributes based on a predefined vector (`remove`) created in previous chunk. Finally, it compiles a long-format table of attribute (column) names with their corresponding year (`pt_names`), enabling cross-temporal schema consistency analysis and identification of naming inconsistencies."
+
+
+```{r, warning = FALSE, message = FALSE}
+pt_names = data.frame()
+
+for (i in 1:length(pt_files)){
+  dat = vect(pt_files[i])
+  dat_name = basename(pt_files[i])
+  name_ind = regexpr("[0-9]{4}", dat_name, perl = T) # pull out the year from file name
+  yr = as.numeric(substr(dat_name, name_ind, name_ind+3))
+  
+  if ("Comment" %in% names(dat)){
+    x = which(!(is.na(dat$Comment)))
+    dat$Comments[x] = dat$Comment[x]
+    
+    x2 = which(names(dat) == "Comment")
+    dat = dat[, -x2]
+  }
+  
+  if (any(names(dat) %in% remove)){
+   x3 = which(names(dat) %in% remove)
+   dat = dat[, -x3]
+  }
+  
+  out = data.frame(year = yr, col_names = names(dat))
+  pt_names = rbind(pt_names, out)
+}
+```
+
+
+```{r}
+colnames_count = pt_names %>%
+  dplyr::summarise(n = dplyr::n(), .by = c(col_names))
+
+cn_missing = colnames_count[which(colnames_count$n < 12), ]
+names(cn_missing) = c("Col_Name", "Count")
+row.names(cn_missing) = NULL
+
+print(paste("There are", nrow(cn_missing), "fields with different column names", 
+            sep = " "))
+```
+
+```{r}
+kable(cn_missing[order(cn_missing$Count, decreasing = TRUE), ])
+
+```
+
+
+
+
+
+
+
+
+
+# takes pt_names table and adds the count of each column name + years where they appear
+```{r}
+colnames_count_yrs = pt_names %>%
+  dplyr::summarise(
+    Count = dplyr::n_distinct(year),
+    Years = paste(sort(unique(year)), collapse = ", "),
+    .by = col_names
+  ) %>%
+  dplyr::arrange(dplyr::desc(Count), col_names)
+
+names(colnames_count_yrs)[1] = "Col_Name"
+
+
+```
+
+
+
+
+##########################
+
+# Renaming column names 
+
+##########################
+
+
+
+```{r}
+# ── Position field audit ───────────────────────────────────────────────────────
+# Checks if any file has both Position and PositionIn at the same time
+# Result: no duplicates found, safe to rename Position -> PositionIn
+
+found = FALSE
+
+for (i in seq_along(pt_files)) {
+  dat = vect(pt_files[i])
+  nm  = names(dat)
+  if (all(c("Position", "PositionIn") %in% nm)) {
+    found = TRUE
+    fname = basename(pt_files[i])
+    yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
+    v1 = trimws(as.character(dat$Position));   v1[v1 == ""] = NA
+    v2 = trimws(as.character(dat$PositionIn)); v2[v2 == ""] = NA
+    both = which(!is.na(v1) & !is.na(v2))
+    diff = both[v1[both] != v2[both]]
+    cat("\nYear:", yr, "-", fname, "\n")
+    cat("Rows with both values:", length(both), "\n")
+    cat("Rows with different values:", length(diff), "\n")
+    if (length(diff) > 0) print(diff)
+  }
+}
+if (!found) cat("\nNo Position duplicates found. Safe to rename.\n")
+```
+
+```{r}
+# ── Weevil field audit ─────────────────────────────────────────────────────────
+# Checks if any file has both WH_Weevil_ and Weevil_dam at the same time
+# Result: no duplicates found, safe to rename both -> WH_Weevil_Dam
+
+found = FALSE
+
+for (i in seq_along(pt_files)) {
+  dat = vect(pt_files[i])
+  nm  = names(dat)
+  if (all(c("WH_Weevil_", "Weevil_dam") %in% nm)) {
+    found = TRUE
+    fname = basename(pt_files[i])
+    yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
+    cat("\nYear:", yr, "-", fname, "\n")
+    cat("Both fields exist: WH_Weevil_ and Weevil_dam\n")
+  }
+}
+if (!found) cat("\nNo Weevil duplicates found. Safe to rename.\n")
+```
+
+```{r}
+# ── Photo field audit ──────────────────────────────────────────────────────────
+# Checks which photo columns coexist per file and flags real conflicts
+# Real conflict = same row has different values in two photo columns
+# Result 2023: Photo (663 rows) and Picture (59 rows), zero overlap -> safe to merge
+
+photo_variants = c("Photo", "Photos", "Picture", "Link_Photo", "Photo_Link")
+
+for (i in seq_along(pt_files)) {
+  dat     = as.data.frame(vect(pt_files[i]))
+  fname   = basename(pt_files[i])
+  yr      = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
+  present = photo_variants[photo_variants %in% names(dat)]
+  if (length(present) < 2) next
+  cat("\n──────────────────────────────────────────\n")
+  cat("Year:", yr, "|", fname, "\n")
+  cat("Photo columns found:", paste(present, collapse = ", "), "\n\n")
+  pairs = combn(present, 2, simplify = FALSE)
+  for (p in pairs) {
+    a = trimws(as.character(dat[[p[1]]])); a[a == ""] = NA
+    b = trimws(as.character(dat[[p[2]]])); b[b == ""] = NA
+    both_diff = which(!is.na(a) & !is.na(b) & a != b)
+    cat("  [", p[1], "] vs [", p[2], "]\n")
+    cat("    Only", p[1], "has value:", length(which(!is.na(a) & is.na(b))), "rows\n")
+    cat("    Only", p[2], "has value:", length(which(is.na(a) & !is.na(b))), "rows\n")
+    cat("    Both same value:     ", length(which(!is.na(a) & !is.na(b) & a == b)), "rows\n")
+    cat("    Both different value:", length(both_diff), "rows  <- real conflict\n")
+    if (length(both_diff) > 0) {
+      conflict_df = data.frame(row = both_diff, A = a[both_diff], B = b[both_diff])
+      names(conflict_df) = c("Row", p[1], p[2])
+      print(conflict_df, row.names = FALSE)
+    }
+  }
+}
+```
+
+```{r}
+# ── Master cleaning chunk ──────────────────────────────────────────────────────
+library(terra)
+
+# --- Simple rename dictionary: add new renames here as needed ---
+rename_map = list(
+  "Position"   = "PositionIn",
+  "WH_Weevil_" = "WH_Weevil_Dam",
+  "Weevil_dam" = "WH_Weevil_Dam"
+)
+
+# --- Photo variants to consolidate into Photo_Link ---
+photo_variants = c("Photo", "Photos", "Picture", "Link_Photo")
+
+# --- Columns to remove: add or delete names here as needed ---
+cols_to_remove = c("Northing", "Easting", "Feat_Name", "Datafile", "GPS_Week",
+                   "GPS_Second", "Point_ID", "Data_Dicti", "POINT_X", "POINT_Y",
+                   "Filt_Pos", "Unfilt_Pos", "Treated", "Corr_Type", "Max_PDOP",
+                   "Horz_Prec", "Max_HDOP", "Rcvr_Type", "Team", "Lifeform",
+                   "Nutrient_I", "GNSS_Heigh")
+
+# --- Extra columns with % besides cover columns ---
+extra_pct_cols = c("Rake_Teeth")
+
+
+# --- PositionIn standardization map ---
+position_map = c(
+  "Edge"   = "StartEnd",
+  "Start"  = "StartEnd",
+  "End"    = "StartEnd",
+  "Middle" = "Center"
+)
+
+# --- Initialize empty list ---
+pt_data_clean = vector("list", length(pt_files))
+
+for (i in seq_along(pt_files)) {
+  
+  # Load each file individually to avoid terra pointer issues
+  dat = vect(pt_files[i])
+  
+  # 1) Simple renames
+  nm = names(dat)
+  for (old in names(rename_map)) {
+    if (old %in% nm) {
+      names(dat)[nm == old] = rename_map[[old]]
+      nm = names(dat)
+    }
+  }
+  
+  # 2) Rake columns: detect and rename automatically
+  # Odd positions = species name, Even positions = cover percentage
+  rake_cols = names(dat)[grepl("^Rake_Spe", names(dat))]
+  if (length(rake_cols) > 0) {
+    for (col in rake_cols) {
+      pos      = if (col == "Rake_Speci") 1L else as.integer(sub("^Rake_Spec?", "", col))
+      new_name = if (pos %% 2 != 0) paste0("Rspecies_", ceiling(pos / 2)) else paste0("Rcover_", pos / 2)
+      names(dat)[names(dat) == col] = new_name
+    }
+  }
+  
+  # --- Convert to data frame once for all remaining operations ---
+  crs_dat = crs(dat)
+  geo     = geom(dat, wkt = TRUE)
+  df      = terra::as.data.frame(dat)
+  
+  # 3) Photo merge -> Photo_Link
+  present = photo_variants[photo_variants %in% names(df)]
+  if (length(present) > 0) {
+    if (!"Photo_Link" %in% names(df)) df$Photo_Link = NA_character_
+    for (v in present) {
+      src  = trimws(as.character(df[[v]])); src[src == ""] = NA
+      tgt  = trimws(as.character(df$Photo_Link)); tgt[tgt == ""] = NA
+      fill = which(is.na(tgt) & !is.na(src))
+      df$Photo_Link[fill] = src[fill]
+      df[[v]] = NULL
+    }
+  }
+  
+  # 4) Remove unwanted columns
+  df = df[, !names(df) %in% cols_to_remove, drop = FALSE]
+  
+  # 5) Strip % from cover columns and extra percentage columns
+  pct_cols = unique(c(
+    names(df)[grepl("cover", names(df), ignore.case = TRUE)],
+    extra_pct_cols[extra_pct_cols %in% names(df)]
+  ))
+  for (col in pct_cols) {
+    vals      = trimws(as.character(df[[col]]))
+    vals[vals %in% c("", "NA")] = NA
+    df[[col]] = suppressWarnings(as.numeric(gsub("%", "", vals)))
+    df[[col]][df[[col]] == -99] = NA
+  }
+  
+  
+    # 6) Standardize PositionIn values
+  # Edge, Start, End, StartEnd -> StartEnd | Middle, Center -> Center
+  if ("PositionIn" %in% names(df)) {
+    vals = trimws(as.character(df$PositionIn))
+    vals[vals == ""] = NA
+    for (old in names(position_map)) {
+      vals[!is.na(vals) & vals == old] = position_map[old]
+    }
+    df$PositionIn = vals
+  }
+  
+  # 7) Standardize Preassigne values for 2022 and 2023 only
+  # No -> NA | Yes -> Random
+  yr = as.numeric(substr(basename(pt_files[i]), 
+                         regexpr("[0-9]{4}", basename(pt_files[i])),
+                         regexpr("[0-9]{4}", basename(pt_files[i])) + 3))
+  if (yr %in% c(2015, 2016, 2017, 2018, 2021, 2022, 2023) & "Preassigne" %in% names(df)) {
+    vals             = trimws(as.character(df$Preassigne))
+    vals[vals == ""] = NA
+    vals[vals == "No"]  = NA
+    vals[vals == "Yes"] = "Random"
+    df$Preassigne = vals
+  }
+  
+  # 8) Standardize Revisit_ values for 2014 only
+  # No -> Random | Yes -> Revisit | NA stays NA
+  if (yr == 2014 & "Revisit_" %in% names(df)) {
+    vals             = trimws(as.character(df$Revisit_))
+    vals[vals == ""] = NA
+    vals[vals == "No"]  = "Random"
+    vals[vals == "Yes"] = "Revisit"
+    df$Revisit_ = vals
+  }
+  
+# 9) Create Assignment column for 2019 and 2020 based on Preassigne and newPatch
+  # Preassigne=Yes AND newPatch=No -> Random
+  # Preassigne=No  AND newPatch=No -> NA
+  # newPatch=Yes                   -> New
+  # NA stays NA
+  if (yr %in% c(2019, 2020) & all(c("Preassigne", "newPatch") %in% names(df))) {
+    pre   = trimws(as.character(df$Preassigne)); pre[pre == ""]   = NA
+    patch = trimws(as.character(df$newPatch));   patch[patch == ""] = NA
+    
+    assignment         = rep(NA_character_, nrow(df))
+    assignment[!is.na(patch) & patch == "Yes"]                            = "New"
+    assignment[!is.na(pre) & pre == "No"  & !is.na(patch) & patch == "No"] = NA
+    assignment[!is.na(pre) & pre == "Yes" & !is.na(patch) & patch == "No"] = "Random"
+    
+    df$Assignment = assignment
+    
+     # Drop source columns now that Assignment is created
+    df$Preassigne = NULL
+    df$newPatch   = NULL
+  }
+  
+  # --- Convert back to SpatVector ---
+  df$geometry        = geo
+  pt_data_clean[[i]] = vect(df, geom = "geometry", crs = crs_dat)
+}
+```
+
+```{r}
+# ── General schema check ───────────────────────────────────────────────────────
+# Run after the master chunk to confirm all renames and merges applied correctly
+# Position and Photo variants should no longer appear
+
+pt_names_clean = data.frame()
+
+for (i in seq_along(pt_data_clean)) {
+  fname = basename(pt_files[i])
+  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
+  pt_names_clean = rbind(pt_names_clean, data.frame(year = yr, col_names = names(pt_data_clean[[i]])))
+}
+
+colnames_count_yrs_clean = pt_names_clean %>%
+  dplyr::summarise(
+    Count = dplyr::n_distinct(year),
+    Years = paste(sort(unique(year)), collapse = ", "),
+    .by = col_names
+  ) %>%
+  dplyr::arrange(dplyr::desc(Count), col_names)
+
+names(colnames_count_yrs_clean)[1] = "Col_Name"
+
+kable(colnames_count_yrs_clean)
+```
+
+```{r}
+# ── Compare original vs cleaned cover values for ALL files ─────────────────────
+# Reads each file from disk and compares against pt_data_clean
+
+for (i in seq_along(pt_files)) {
+  fname     = basename(pt_files[i])
+  dat_orig  = terra::as.data.frame(vect(pt_files[i]))
+  dat_clean = terra::as.data.frame(pt_data_clean[[i]])
+  
+  cover_orig = names(dat_orig)[grepl("cover", names(dat_orig), ignore.case = TRUE)]
+  
+  cat("\n──────────────────────────────────────────\n")
+  cat("File:", fname, "\n\n")
+  
+  for (col in cover_orig) {
+    orig_vals  = unique(trimws(as.character(dat_orig[[col]])))
+    orig_vals  = orig_vals[!is.na(orig_vals) & orig_vals != ""]
+    
+    clean_vals = if (col %in% names(dat_clean)) {
+      unique(dat_clean[[col]])
+    } else {
+      NA
+    }
+    clean_vals = clean_vals[!is.na(clean_vals)]
+    
+    # Flag if any value still has % or if lengths differ
+    has_pct   = any(grepl("%", as.character(clean_vals)))
+    flag      = if (has_pct) "  *** % STILL PRESENT ***" else ""
+    
+    cat("  Column:", col, flag, "\n")
+    cat("    Original:", paste(head(orig_vals,  5), collapse = " | "), "\n")
+    cat("    Cleaned: ", paste(head(clean_vals, 5), collapse = " | "), "\n\n")
+  }
+}
+```
+
+```{r}
+# ── Check row counts per file in pt_data_clean ────────────────────────────────
+# If all files show the same row count something went wrong loading them
+
+for (i in seq_along(pt_data_clean)) {
+  fname = basename(pt_files[i])
+  n_clean = nrow(terra::as.data.frame(pt_data_clean[[i]]))
+  n_orig  = nrow(terra::as.data.frame(vect(pt_files[i])))
+  flag    = if (n_clean != n_orig) "*** MISMATCH ***" else "ok"
+  cat(fname, "| orig:", n_orig, "| clean:", n_clean, "|", flag, "\n")
+}
+```
+
+```{r}
+# ── PositionIn value counts across all files ───────────────────────────────────
+
+for (i in seq_along(pt_data_clean)) {
+  fname = basename(pt_files[i])
+  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
+  df    = terra::as.data.frame(pt_data_clean[[i]])
+  
+  if (!"PositionIn" %in% names(df)) next
+  
+  vals     = trimws(as.character(df$PositionIn))
+  vals[vals == ""] = NA
+  
+  counts   = table(vals, useNA = "always")
+  total    = nrow(df)
+  n_na     = sum(is.na(vals))
+  
+  cat("Year:", yr, "| Total rows:", total, "| NAs:", n_na, "\n")
+  print(counts)
+  cat("\n")
+}
+```
+
+```{r}
+# ── WH_Weevil_Dam value counts across all files ────────────────────────────────
+
+for (i in seq_along(pt_data_clean)) {
+  fname = basename(pt_files[i])
+  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
+  df    = terra::as.data.frame(pt_data_clean[[i]])
+  
+  if (!"WH_Weevil_Dam" %in% names(df)) next
+  
+  vals          = trimws(as.character(df$WH_Weevil_Dam))
+  vals[vals == ""] = NA
+  
+  counts = table(vals, useNA = "always")
+  total  = nrow(df)
+  n_na   = sum(is.na(vals))
+  
+  cat("Year:", yr, "| Total rows:", total, "| NAs:", n_na, "\n")
+  print(counts)
+  cat("\n")
+}
+```
+
+
+
+
+```{r}
+# ── Date-related column names across all files ─────────────────────────────────
+
+for (i in seq_along(pt_data_clean)) {
+  fname = basename(pt_files[i])
+  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
+  df    = terra::as.data.frame(pt_data_clean[[i]])
+  
+  present = names(df)[grepl("date|time", names(df), ignore.case = TRUE)]
+  
+  cat("Year:", yr, "->", paste(present, collapse = " | "), "\n")
+}
+```
+```{r}
+# ── Date-related column sample values across all files ─────────────────────────
+
+for (i in seq_along(pt_data_clean)) {
+  fname = basename(pt_files[i])
+  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
+  df    = terra::as.data.frame(pt_data_clean[[i]])
+  
+  present = names(df)[grepl("date|time", names(df), ignore.case = TRUE)]
+  if (length(present) == 0) next
+  
+  cat("\nYear:", yr, "\n")
+  for (col in present) {
+    sample_vals = head(unique(trimws(as.character(df[[col]]))), 5)
+    cat("  ", col, "->", paste(sample_vals, collapse = " | "), "\n")
+  }
+}
+```
+
+
+```{r}
+# ── NOTE: GPS Time Zone Verification Needed ────────────────────────────────────
+# GPS_Date is read as POSIXct with UTC label by terra, but this does NOT
+# confirm the GPS was configured in UTC during data collection.
+# GPS_Time is stored as character in 12h format (e.g. 09:04:55am) with no
+# timezone information attached.
+#
+# 
+# Confirm with field team: what timezone was the GPS device configured in
+# during data collection? (likely America/Los_Angeles = PDT UTC-7 in summer,
+# PST UTC-8 in winter)
+#
+# If GPS was in local LA time -> add 7h (PDT) or 8h (PST) to get UTC
+# If GPS was already in UTC   -> no conversion needed
+# ------------------------------------------------------------------------------
+```
+
+
+```{r}
+# ── Value counts for Reprodtive, Flowering, Spp1_Flowe across all files ────────
+
+target_cols = c("Reprodtive", "Flowering", "Spp1_Flowe")
+
+for (i in seq_along(pt_data_clean)) {
+  fname = basename(pt_files[i])
+  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
+  df    = terra::as.data.frame(pt_data_clean[[i]])
+  
+  present = target_cols[target_cols %in% names(df)]
+  if (length(present) == 0) next
+  
+  cat("\n──────────────────────────────────────────\n")
+  cat("Year:", yr, "| Total rows:", nrow(df), "\n\n")
+  
+  for (col in present) {
+    vals             = trimws(as.character(df[[col]]))
+    vals[vals == ""] = NA
+    n_na             = sum(is.na(vals))
+    counts           = table(vals, useNA = "always")
+    
+    cat("  Column:", col, "| NAs:", n_na, "\n")
+    print(counts)
+    cat("\n")
+  }
+}
+```
+
+
+
+```{r}
+# ── Export all cleaned files to Excel ─────────────────────────────────────────
+# One sheet per year, saved to your Box folder
+
+library(openxlsx)
+
+wb = createWorkbook()
+
+for (i in seq_along(pt_data_clean)) {
+  fname = basename(pt_files[i])
+  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
+  
+  # Read from pt_data_clean, NOT from disk
+  df = terra::as.data.frame(pt_data_clean[[i]])
+  
+  addWorksheet(wb, sheetName = as.character(yr))
+  writeData(wb, sheet = as.character(yr), df, headerStyle = createStyle(
+    textDecoration = "bold",
+    fgFill         = "#4472C4",
+    fontColour     = "#FFFFFF"
+  ))
+}
+
+# output_path = "C:/Users/mcontreras65/Box/NASA-IAV/classification/data/model_inputs/shapefiles/maria_cstars_all_field_data/delta_cleaned_data.xlsx"
+# saveWorkbook(wb, output_path, overwrite = TRUE)
+# cat("File saved to:", output_path, "\n")
+```
+
+
+```{r}
+# ── Compare Preassigne, newPatch and Assignment original vs cleaned 2019 and 2020
+
+for (i in seq_along(pt_files)) {
+  fname = basename(pt_files[i])
+  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
+  
+  if (!yr %in% c(2019, 2020)) next
+  
+  dat_orig  = terra::as.data.frame(vect(pt_files[i]))
+  dat_clean = terra::as.data.frame(pt_data_clean[[i]])
+  
+  cat("\n──────────────────────────────────────────\n")
+  cat("Year:", yr, "| Total rows:", nrow(dat_orig), "\n\n")
+  
+  # Compare Preassigne and newPatch original vs cleaned
+  for (col in c("Preassigne", "newPatch")) {
+    if (!col %in% names(dat_orig)) {
+      cat("  Column", col, "not found in original\n\n")
+      next
+    }
+    orig  = trimws(as.character(dat_orig[[col]]));  orig[orig == ""]   = NA
+    clean = trimws(as.character(dat_clean[[col]])); clean[clean == ""] = NA
+    
+    cat("  Column:", col, "\n")
+    cat("    Original: "); print(table(orig,  useNA = "always"))
+    cat("    Cleaned:  "); print(table(clean, useNA = "always"))
+    cat("\n")
+  }
+  
+  # Show resulting Assignment column
+  cat("  Column: Assignment (new)\n")
+  if (!"Assignment" %in% names(dat_clean)) {
+    cat("    Assignment not found in cleaned\n\n")
+  } else {
+    clean_assign = trimws(as.character(dat_clean$Assignment))
+    clean_assign[clean_assign == ""] = NA
+    cat("    Cleaned:  "); print(table(clean_assign, useNA = "always"))
+    cat("\n")
+  }
+}
+```
+```{r}
+# ── Export change log to Word document ────────────────────────────────────────
+
+library(openxlsx)
+
+changes = data.frame(
+  Category = c(
+    "Simple Rename", "Simple Rename", "Simple Rename",
+    "Rake Rename", "Rake Rename",
+    "Column Merge",
+    rep("Columns Removed", 22),
+    "Value Cleaning", "Value Cleaning",
+    rep("PositionIn Standardization", 4),
+    rep("Preassigne Standardization", 2),
+    rep("Revisit_ Standardization", 2),
+    rep("Assignment Creation 2019-2020", 3),
+    rep("Pending", 2)
+  ),
+  Detail = c(
+    "Position -> PositionIn",
+    "WH_Weevil_ -> WH_Weevil_Dam",
+    "Weevil_dam -> WH_Weevil_Dam",
+    "Rake_Speci, Rake_Spec3, Rake_Spec5... -> Rspecies_1 to Rspecies_6",
+    "Rake_Spec2, Rake_Spec4, Rake_Spec6... -> Rcover_1 to Rcover_6",
+    "Photo, Photos, Picture, Link_Photo -> Photo_Link",
+    "Northing", "Easting", "Feat_Name", "Datafile", "GPS_Week", "GPS_Second",
+    "Point_ID", "Data_Dicti", "POINT_X", "POINT_Y", "Filt_Pos", "Unfilt_Pos",
+    "Treated", "Corr_Type", "Max_PDOP", "Horz_Prec", "Max_HDOP", "Rcvr_Type",
+    "Team", "Lifeform", "Nutrient_I", "GNSS_Heigh",
+    "All cover columns: removed % sign, converted to numeric",
+    "Rake_Teeth: removed % sign, converted to numeric",
+    "Edge -> StartEnd", "Start -> StartEnd", "End -> StartEnd", "Middle -> Center",
+    "No -> NA (years 2015-2018, 2021-2023)", "Yes -> Random (years 2015-2018, 2021-2023)",
+    "No -> Random (2014 only)", "Yes -> Revisit (2014 only)",
+    "newPatch=Yes -> New", "Preassigne=Yes AND newPatch=No -> Random",
+    "Preassigne=No AND newPatch=No -> NA. Preassigne and newPatch columns dropped after.",
+    "Verify GPS timezone with field team before converting GPS_Time to UTC",
+    "Homogenize WH_Weevil_Dam values across years"
+  )
+)
+
+wb = createWorkbook()
+addWorksheet(wb, "Change Log")
+writeData(wb, sheet = "Change Log", changes, headerStyle = createStyle(
+  textDecoration = "bold",
+  fgFill         = "#4472C4",
+  fontColour     = "#FFFFFF"
+))
+setColWidths(wb, sheet = "Change Log", cols = 1:2, widths = c(35, 70))
+
+# output_path = "C:/Users/mcontreras65/Box/NASA-IAV/classification/data/model_inputs/shapefiles/maria_cstars_all_field_data/delta_change_log.xlsx"
+# saveWorkbook(wb, output_path, overwrite = TRUE)
+# cat("Change log saved to:", output_path, "\n")
+```
+
+
+
+```{r}
+# ── Overwrite original shapefiles with cleaned versions ───────────────────────
+# WARNING: This will overwrite the original files permanently
+# Make sure pt_data_clean is up to date by running the master chunk first
+
+library(terra)
+
+for (i in seq_along(pt_files)) {
+  writeVector(pt_data_clean[[i]], pt_files[i], overwrite = TRUE)
+  cat("Overwritten:", basename(pt_files[i]), "\n")
+}
+```
+
+
+```{r}
+# ── Check coordinate columns and geometry in all files ─────────────────────────
+
+i_check = 1
+dat      = vect(pt_files[i_check])
+
+cat("CRS of file:", crs(dat, describe = TRUE)$name, "\n\n")
+
+cat("Coordinate-related columns in attribute table:\n")
+coord_cols = names(dat)[grepl("utm|coord|x|y|lat|lon|east|north", 
+                               names(dat), ignore.case = TRUE)]
+print(coord_cols)
+
+cat("\nFirst 3 rows of geometry:\n")
+print(head(geom(dat), 3))
+```
+
+
+
+
+
+
+# List of fields to keep that are common enough or started later
+```{r}
+fav_info = c("MatDensity", "WH_Weevil_", "Color", "Treated", "Flowering",
+             "Spp1_Flowe", "Reprodtive", "Canopy", "Weevil_dam")
+sav_info = c("SAV_adj_wa", "Microsysti", "SAV_Adjace", "Rake_Spe11", "Rake_Spe12")
+other_info = c("Preassigne", "PositionIn", "Position", "newPatch", "Assignment",
+               "Photos", "Revisit_", "Link_Photo", "Photo_Link", "Picture",
+               "Photo")
+```
+
+
+
+# List of fields that may be the same but with formatting difference
+
+```{r}
+assignment = c("Preassigne", "newPatch", "Assignment", "Revisit_")
+
+position = c("PositionIn", "Position", "Unfilt_Pos", "Filt_Pos")
+
+
+photo = c("Photos", "Link_Photo", "Photo_Link", "Picture", "Photo")
+
+wh_weevil = c("WH_Weevil_", "Weevil_dam")
+
+sav_adj = c('SAV_adj_wa', "SAV_Adjace") # SAV_adj_water
+
+
+```
+
+
+```{r}
+output = data.frame()
+for (i in 1:length(pt_files)){
+  dat = vect(pt_files[i])
+  
+  x = which(names(dat) %in% assignment)
+  name_track = names(dat)[x]
+  name_track
+  name_out = paste0(name_track, collapse = "|")
+  
+  year = lubridate::year(dat$GPS_Date)[1]
+  
+  out = data.frame(ID = i, Fields = name_out, date = year)
+  # head(dat[[name_track]])
+  output = rbind(output, out)
+}
+
+kable(output)
+```
+
