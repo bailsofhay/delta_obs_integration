@@ -1,862 +1,1814 @@
 ---
-title: "Delta Data Integration Mess-around"
-author: "Bailey Morrison & Maria Contreras"
-date: "2026-03-23"
-output: html_document
+title: "Delta Field Data Integration and Standardization"
+author: "Bailey Morrison"
+date: "2026-11-09"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: false
+    theme: flatly
+    highlight: tango
 ---
 
+# 1. Overview
+
+This script combines field observation data collected across multiple years
+in the Sacramento-San Joaquin Delta into a single, standardized dataset.
+
+Because the data were collected in different years, some columns have different
+names even though they contain the same information. In addition, some columns
+use different values or categories to describe the same observations.
+
+The main goals of this script are to:
+
+1. Identify columns that contain the same information but have different names.
+2. Combine equivalent columns into a single column with a consistent name.
+3. Standardize values within columns so the same categories and codes are used
+   across all years.
+4. Combine the individual shapefiles into a single dataset.
+5. Save the cleaned dataset for future analyses.
+
+**Important:** The original shapefiles are treated as raw data and should
+never be modified or overwritten. All corrections are performed in R, and
+the cleaned dataset is saved separately.
+
+# 2. Setup
+
+Set the default options for displaying code when the R Markdown file is
+knitted into an HTML document.
+
 ```{r setup, include=FALSE}
+# Display R code in the knitted document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-```{r, warning=FALSE, message=FALSE}
-# libraries needed
-require(terra)
-# library(tidyverse)
-require(tidyterra)
-require(kableExtra)
-require(openxlsx)
-```
+# 3. Load Required Packages
 
-#All shapefiles that have been created in the delta
+The following packages are needed to run this script.
 
-IMPORTANT: Please change out the file path (Line 27-) to the directory on you computer the shapefiles are located. Please do the same thing on line 671 and 769 so your output file is exported to the correct location.
+If a package is not already installed on your computer, R will automatically
+install it. Packages that are already installed will not be reinstalled.
 
-```{r}
-# change file directory path
-files = list.files(path = "C://Users/bdmor/Box/NASA-IAV/classification/data/model_inputs/shapefiles/maria_cstars_all_field_data/",
-                     pattern = ".shp", include.dirs = T, full.names = T, recursive = T)
-files = files[-grep(".xml", files)]
+```{r libraries, warning=FALSE, message=FALSE}
+# List of packages needed for this script
+packages = c("terra", "tidyterra", "dplyr", "kableExtra",
+             "openxlsx", "stringr")
 
-```
+# Identify packages that are not installed
+missing_packages = packages[!packages %in% rownames(installed.packages())]
 
-#Break apart shapefiles by line or point
-```{r}
-pt_files = files[grep("pts|point", files, perl = T)]
-ln_files = files[grep("line", files)]
-#print (pt_files)
-```
-
-# Start analysis on point shapefiles
-
-Names I already know are the same field, but with spelling/format difference
-# Names that need to be corrected to match similar field:
-```{r}
-# bad_names = data.frame(wrong = "Comment", correct = "Comments")
-
-```
-
-# Get a dataframe of all column names by year
-```{r, warning=FALSE, message=FALSE}
-pt_names = data.frame()
-
-for (i in 1:length(pt_files)){
-  dat = vect(pt_files[i])
-  dat_name = basename(pt_files[i])
-  name_ind = regexpr("[0-9]{4}", dat_name, perl = T) # pull out the year from file name
-  yr = as.numeric(substr(dat_name, name_ind, name_ind+3))
-  
-  out = data.frame(year = yr, col_names = names(dat))
-  pt_names = rbind(pt_names, out)
+# Install missing packages, if any
+if (length(missing_packages) > 0) {
+  install.packages(missing_packages)
 }
+
+# Load all required packages
+invisible(lapply(packages, library, character.only = TRUE))
 ```
 
 
+# 4. Data Preparation
 
-# Count the number of times the same column name appears in all shapefile dates
-```{r}
-colnames_count = pt_names %>%
-  dplyr::summarise(n = dplyr::n(), .by = c(col_names))
+This section identifies the original shapefiles that will be used in the
+analysis and separates point and line datasets.
 
-#write.csv(colnames_count, "colnames_count.csv", row.names = FALSE)
+The point shapefiles contain the field observations that will be combined
+and standardized in this script.
 
-```
+## 4.1 Set Input and Output Locations
 
-#There are 12 point files. If a column name is the same in all years, then the count should be 12. 
+First, specify where the original shapefiles are stored and where the
+cleaned datasets will be saved.
 
-# List of common column names across all shapefiles
-```{r}
-# there are 12 pt files. which names are repeated 12 times
-x = which(colnames_count$n == 12)
-cn_all = colnames_count[x,]
-names(cn_all) = c("Col_Name", "Count")
-row.names(cn_all) = NULL
-print(paste("There are", nrow(cn_all), "fields with the same column names", 
-            sep = " "))
-```
+- `input_dir`: Folder containing the original, unmodified shapefiles.
+- `outpath`: Folder where cleaned datasets and other outputs will be saved.
+- `output_path1`: File location for the cleaned Excel dataset.
+- `output_path2`: File location for the data-cleaning change log.
 
-
-# List of common column names across all shapefiles
-```{r}
-kable(cn_all)
-```
+**Note:** Update these paths if running the script on a different computer.
 
 ```{r}
-cn_missing = colnames_count[which(colnames_count$n < 12), ]
-names(cn_missing) = c("Col_Name", "Count")
-row.names(cn_missing) = NULL
+# Folder containing the ORIGINAL shapefiles (do not modify these files)
+input_dir = "C:/Users/bdmor/Box/NASA-IAV/classification/data/model_inputs/shapefiles/CSTARS_All_FieldData/raw/"
 
-print(paste("There are", nrow(cn_missing), "fields with different column names", 
-            sep = " "))
+# Folder where cleaned datasets will be saved
+outpath = "C:/Users/bdmor/Box/NASA-IAV/classification/data/model_inputs/shapefiles/CSTARS_All_FieldData/"
 ```
 
 
-# List of column names not common among all shapefiles
-```{r}
-kable(cn_missing[order(cn_missing$Count, decreasing = TRUE), ])
-```
+## 4.2 Find All Shapefiles
 
+The original data are stored as shapefiles (`.shp`), which contain spatial
+features (points or lines) and their associated attribute data.
 
+The code below searches the input folder and all its subfolders for shapefiles.
 
-# Names that we DO NOT NEED 100%:
-```{r}
-remove = c("Northing", "Easting", "Feat_Name", "Datafile", "GPS_Week",
-           "GPS_Second", "Point_ID", "Data_Dicti", "POINT_X", "POINT_Y", "Filt_pos", "Unfilt_Pos", "Treated",
-           "Corr_Type", "Max_PDOP", "Horz_Prec", "Point_ID", "Max_HDOP", "Rcvr_Type", "Team",
-           "Lifeform", "Nutrient_I", "GNSS_Heigh"	)
-```
-
-
-# Iterates through all point shapefiles, loads each dataset using `terra::vect()`, and extracts the year from the filename using a regex pattern (`[0-9]{4}`). It standardizes attribute fields by merging values from `Comment` into `Comments` when present and then removing the original `Comment` field. It removes non-essential attributes based on a predefined vector (`remove`) created in previous chunk. Finally, it compiles a long-format table of attribute (column) names with their corresponding year (`pt_names`), enabling cross-temporal schema consistency analysis and identification of naming inconsistencies."
-
-
-```{r, warning = FALSE, message = FALSE}
-pt_names = data.frame()
-
-for (i in 1:length(pt_files)){
-  dat = vect(pt_files[i])
-  dat_name = basename(pt_files[i])
-  name_ind = regexpr("[0-9]{4}", dat_name, perl = T) # pull out the year from file name
-  yr = as.numeric(substr(dat_name, name_ind, name_ind+3))
-  
-  if ("Comment" %in% names(dat)){
-    x = which(!(is.na(dat$Comment)))
-    dat$Comments[x] = dat$Comment[x]
-    
-    x2 = which(names(dat) == "Comment")
-    dat = dat[, -x2]
-  }
-  
-  if (any(names(dat) %in% remove)){
-   x3 = which(names(dat) %in% remove)
-   dat = dat[, -x3]
-  }
-  
-  out = data.frame(year = yr, col_names = names(dat))
-  pt_names = rbind(pt_names, out)
-}
-```
-
+The resulting `files` object contains the full file path for every shapefile
+found.
 
 ```{r}
-colnames_count = pt_names %>%
-  dplyr::summarise(n = dplyr::n(), .by = c(col_names))
-
-cn_missing = colnames_count[which(colnames_count$n < 12), ]
-names(cn_missing) = c("Col_Name", "Count")
-row.names(cn_missing) = NULL
-
-print(paste("There are", nrow(cn_missing), "fields with different column names", 
-            sep = " "))
-```
-
-```{r}
-kable(cn_missing[order(cn_missing$Count, decreasing = TRUE), ])
-
-```
-
-
-
-
-
-
-
-
-
-# takes pt_names table and adds the count of each column name + years where they appear
-```{r}
-colnames_count_yrs = pt_names %>%
-  dplyr::summarise(
-    Count = dplyr::n_distinct(year),
-    Years = paste(sort(unique(year)), collapse = ", "),
-    .by = col_names
-  ) %>%
-  dplyr::arrange(dplyr::desc(Count), col_names)
-
-names(colnames_count_yrs)[1] = "Col_Name"
-
-
-```
-
-
-
-
-##########################
-
-# Renaming column names 
-
-##########################
-
-
-
-```{r}
-# ── Position field audit ───────────────────────────────────────────────────────
-# Checks if any file has both Position and PositionIn at the same time
-# Result: no duplicates found, safe to rename Position -> PositionIn
-
-found = FALSE
-
-for (i in seq_along(pt_files)) {
-  dat = vect(pt_files[i])
-  nm  = names(dat)
-  if (all(c("Position", "PositionIn") %in% nm)) {
-    found = TRUE
-    fname = basename(pt_files[i])
-    yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
-    v1 = trimws(as.character(dat$Position));   v1[v1 == ""] = NA
-    v2 = trimws(as.character(dat$PositionIn)); v2[v2 == ""] = NA
-    both = which(!is.na(v1) & !is.na(v2))
-    diff = both[v1[both] != v2[both]]
-    cat("\nYear:", yr, "-", fname, "\n")
-    cat("Rows with both values:", length(both), "\n")
-    cat("Rows with different values:", length(diff), "\n")
-    if (length(diff) > 0) print(diff)
-  }
-}
-if (!found) cat("\nNo Position duplicates found. Safe to rename.\n")
-```
-
-```{r}
-# ── Weevil field audit ─────────────────────────────────────────────────────────
-# Checks if any file has both WH_Weevil_ and Weevil_dam at the same time
-# Result: no duplicates found, safe to rename both -> WH_Weevil_Dam
-
-found = FALSE
-
-for (i in seq_along(pt_files)) {
-  dat = vect(pt_files[i])
-  nm  = names(dat)
-  if (all(c("WH_Weevil_", "Weevil_dam") %in% nm)) {
-    found = TRUE
-    fname = basename(pt_files[i])
-    yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
-    cat("\nYear:", yr, "-", fname, "\n")
-    cat("Both fields exist: WH_Weevil_ and Weevil_dam\n")
-  }
-}
-if (!found) cat("\nNo Weevil duplicates found. Safe to rename.\n")
-```
-
-```{r}
-# ── Photo field audit ──────────────────────────────────────────────────────────
-# Checks which photo columns coexist per file and flags real conflicts
-# Real conflict = same row has different values in two photo columns
-# Result 2023: Photo (663 rows) and Picture (59 rows), zero overlap -> safe to merge
-
-photo_variants = c("Photo", "Photos", "Picture", "Link_Photo", "Photo_Link")
-
-for (i in seq_along(pt_files)) {
-  dat     = as.data.frame(vect(pt_files[i]))
-  fname   = basename(pt_files[i])
-  yr      = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
-  present = photo_variants[photo_variants %in% names(dat)]
-  if (length(present) < 2) next
-  cat("\n──────────────────────────────────────────\n")
-  cat("Year:", yr, "|", fname, "\n")
-  cat("Photo columns found:", paste(present, collapse = ", "), "\n\n")
-  pairs = combn(present, 2, simplify = FALSE)
-  for (p in pairs) {
-    a = trimws(as.character(dat[[p[1]]])); a[a == ""] = NA
-    b = trimws(as.character(dat[[p[2]]])); b[b == ""] = NA
-    both_diff = which(!is.na(a) & !is.na(b) & a != b)
-    cat("  [", p[1], "] vs [", p[2], "]\n")
-    cat("    Only", p[1], "has value:", length(which(!is.na(a) & is.na(b))), "rows\n")
-    cat("    Only", p[2], "has value:", length(which(is.na(a) & !is.na(b))), "rows\n")
-    cat("    Both same value:     ", length(which(!is.na(a) & !is.na(b) & a == b)), "rows\n")
-    cat("    Both different value:", length(both_diff), "rows  <- real conflict\n")
-    if (length(both_diff) > 0) {
-      conflict_df = data.frame(row = both_diff, A = a[both_diff], B = b[both_diff])
-      names(conflict_df) = c("Row", p[1], p[2])
-      print(conflict_df, row.names = FALSE)
-    }
-  }
-}
-```
-
-```{r}
-# ── Master cleaning chunk ──────────────────────────────────────────────────────
-library(terra)
-
-# --- Simple rename dictionary: add new renames here as needed ---
-rename_map = list(
-  "Position"   = "PositionIn",
-  "WH_Weevil_" = "WH_Weevil_Dam",
-  "Weevil_dam" = "WH_Weevil_Dam"
+# Find all shapefiles in the input directory and its subfolders
+files = list.files(
+  path = input_dir,
+  pattern = "\\.shp$",
+  full.names = TRUE,
+  recursive = TRUE,
+  ignore.case = TRUE
 )
 
-# --- Photo variants to consolidate into Photo_Link ---
-photo_variants = c("Photo", "Photos", "Picture", "Link_Photo")
+# Display the total number of shapefiles found
+print(paste("Found", length(files), "shapefiles"))
+```
 
-# --- Columns to remove: add or delete names here as needed ---
-cols_to_remove = c("Northing", "Easting", "Feat_Name", "Datafile", "GPS_Week",
-                   "GPS_Second", "Point_ID", "Data_Dicti", "POINT_X", "POINT_Y",
-                   "Filt_Pos", "Unfilt_Pos", "Treated", "Corr_Type", "Max_PDOP",
-                   "Horz_Prec", "Max_HDOP", "Rcvr_Type", "Team", "Lifeform",
-                   "Nutrient_I", "GNSS_Heigh")
+## 4.3 Separate Point and Line Shapefiles
 
-# --- Extra columns with % besides cover columns ---
-extra_pct_cols = c("Rake_Teeth")
+The field data contain both point and line shapefiles.
+
+- **Point shapefiles:** Individual locations where field observations were
+  collected.
+- **Line shapefiles:** Spatial features represented by lines.
+
+These datasets need to be processed separately because they contain
+different types of spatial features.
+
+The filenames and folder paths contain keywords that help identify the
+shapefile type:
+
+- Point shapefiles contain `pts` or `point`.
+- Line shapefiles contain `line`.
+
+We use these keywords to create separate lists of point and line shapefiles.
+
+```{r}
+# Identify point shapefiles using their full file paths
+pt_files = files[grep("pts|point", files, perl = TRUE)]
+
+# Identify line shapefiles using their full file paths
+ln_files = files[grep("line", files, perl = TRUE)]
+
+# Count the number of files in each group
+print(paste("Point shapefiles:", length(pt_files)))
+print(paste("Line shapefiles:", length(ln_files)))
+```
+
+There should be **12 point shapefiles and 13 line shapefiles**.
+
+The point shapefiles (`pt_files`) will be used in the following sections
+to identify differences in column names and standardize the field data.
+
+The line shapefiles (`ln_files`) are identified here but are not included
+in the point-data integration workflow.
 
 
-# --- PositionIn standardization map ---
-position_map = c(
-  "Edge"   = "StartEnd",
-  "Start"  = "StartEnd",
-  "End"    = "StartEnd",
-  "Middle" = "Center"
-)
+# 5. Examine Column Names in Point Shapefiles
 
-# --- Initialize empty list ---
-pt_data_clean = vector("list", length(pt_files))
+Before combining the point shapefiles from different years, we need to examine
+their attribute tables.
 
+Each shapefile contains columns describing field observations, such as species,
+vegetation cover, location, and environmental conditions. However, the column
+names are not always consistent across years.
+
+For example, two shapefiles may contain the same information but use different
+column names. Some columns were also added in later years and are not present
+in earlier datasets.
+
+This section identifies these differences so we can determine which columns
+need to be renamed, combined, or added when integrating the datasets.
+
+**Important:** This section only examines column names. No changes are made
+to the original shapefiles.
+
+
+## 5.1 Extract Column Names from Each Shapefile
+
+First, we create a table containing the column names from every point
+shapefile.
+
+For each shapefile, the code:
+
+1. Opens the shapefile.
+2. Extracts the year from its filename.
+3. Gets the names of all columns.
+4. Adds the year and column names to a combined table.
+
+The resulting `pt_names` dataframe contains two columns:
+
+- `year`: Year associated with the shapefile.
+- `col_names`: Name of an attribute column in that shapefile.
+
+Each row represents one column from one shapefile.
+
+```{r, warning=FALSE, message=FALSE}
+# Create an empty dataframe to store column names
+pt_names = data.frame()
+
+# Loop through each point shapefile
 for (i in seq_along(pt_files)) {
-  
-  # Load each file individually to avoid terra pointer issues
-  dat = vect(pt_files[i])
-  
-  # 1) Simple renames
-  nm = names(dat)
-  for (old in names(rename_map)) {
-    if (old %in% nm) {
-      names(dat)[nm == old] = rename_map[[old]]
-      nm = names(dat)
-    }
-  }
-  
-  # 2) Rake columns: detect and rename automatically
-  # Odd positions = species name, Even positions = cover percentage
-  rake_cols = names(dat)[grepl("^Rake_Spe", names(dat))]
-  if (length(rake_cols) > 0) {
-    for (col in rake_cols) {
-      pos      = if (col == "Rake_Speci") 1L else as.integer(sub("^Rake_Spec?", "", col))
-      new_name = if (pos %% 2 != 0) paste0("Rspecies_", ceiling(pos / 2)) else paste0("Rcover_", pos / 2)
-      names(dat)[names(dat) == col] = new_name
-    }
-  }
-  
-  # --- Convert to data frame once for all remaining operations ---
-  crs_dat = crs(dat)
-  geo     = geom(dat, wkt = TRUE)
-  df      = terra::as.data.frame(dat)
-  
-  # 3) Photo merge -> Photo_Link
-  present = photo_variants[photo_variants %in% names(df)]
-  if (length(present) > 0) {
-    if (!"Photo_Link" %in% names(df)) df$Photo_Link = NA_character_
-    for (v in present) {
-      src  = trimws(as.character(df[[v]])); src[src == ""] = NA
-      tgt  = trimws(as.character(df$Photo_Link)); tgt[tgt == ""] = NA
-      fill = which(is.na(tgt) & !is.na(src))
-      df$Photo_Link[fill] = src[fill]
-      df[[v]] = NULL
-    }
-  }
-  
-  # 4) Remove unwanted columns
-  df = df[, !names(df) %in% cols_to_remove, drop = FALSE]
-  
-  # 5) Strip % from cover columns and extra percentage columns
-  pct_cols = unique(c(
-    names(df)[grepl("cover", names(df), ignore.case = TRUE)],
-    extra_pct_cols[extra_pct_cols %in% names(df)]
-  ))
-  for (col in pct_cols) {
-    vals      = trimws(as.character(df[[col]]))
-    vals[vals %in% c("", "NA")] = NA
-    df[[col]] = suppressWarnings(as.numeric(gsub("%", "", vals)))
-    df[[col]][df[[col]] == -99] = NA
-  }
-  
-  
-    # 6) Standardize PositionIn values
-  # Edge, Start, End, StartEnd -> StartEnd | Middle, Center -> Center
-  if ("PositionIn" %in% names(df)) {
-    vals = trimws(as.character(df$PositionIn))
-    vals[vals == ""] = NA
-    for (old in names(position_map)) {
-      vals[!is.na(vals) & vals == old] = position_map[old]
-    }
-    df$PositionIn = vals
-  }
-  
-  # 7) Standardize Preassigne values for 2022 and 2023 only
-  # No -> NA | Yes -> Random
-  yr = as.numeric(substr(basename(pt_files[i]), 
-                         regexpr("[0-9]{4}", basename(pt_files[i])),
-                         regexpr("[0-9]{4}", basename(pt_files[i])) + 3))
-  if (yr %in% c(2015, 2016, 2017, 2018, 2021, 2022, 2023) & "Preassigne" %in% names(df)) {
-    vals             = trimws(as.character(df$Preassigne))
-    vals[vals == ""] = NA
-    vals[vals == "No"]  = NA
-    vals[vals == "Yes"] = "Random"
-    df$Preassigne = vals
-  }
-  
-  # 8) Standardize Revisit_ values for 2014 only
-  # No -> Random | Yes -> Revisit | NA stays NA
-  if (yr == 2014 & "Revisit_" %in% names(df)) {
-    vals             = trimws(as.character(df$Revisit_))
-    vals[vals == ""] = NA
-    vals[vals == "No"]  = "Random"
-    vals[vals == "Yes"] = "Revisit"
-    df$Revisit_ = vals
-  }
-  
-# 9) Create Assignment column for 2019 and 2020 based on Preassigne and newPatch
-  # Preassigne=Yes AND newPatch=No -> Random
-  # Preassigne=No  AND newPatch=No -> NA
-  # newPatch=Yes                   -> New
-  # NA stays NA
-  if (yr %in% c(2019, 2020) & all(c("Preassigne", "newPatch") %in% names(df))) {
-    pre   = trimws(as.character(df$Preassigne)); pre[pre == ""]   = NA
-    patch = trimws(as.character(df$newPatch));   patch[patch == ""] = NA
-    
-    assignment         = rep(NA_character_, nrow(df))
-    assignment[!is.na(patch) & patch == "Yes"]                            = "New"
-    assignment[!is.na(pre) & pre == "No"  & !is.na(patch) & patch == "No"] = NA
-    assignment[!is.na(pre) & pre == "Yes" & !is.na(patch) & patch == "No"] = "Random"
-    
-    df$Assignment = assignment
-    
-     # Drop source columns now that Assignment is created
-    df$Preassigne = NULL
-    df$newPatch   = NULL
-  }
-  
-  # --- Convert back to SpatVector ---
-  df$geometry        = geo
-  pt_data_clean[[i]] = vect(df, geom = "geometry", crs = crs_dat)
-}
-```
 
-```{r}
-# ── General schema check ───────────────────────────────────────────────────────
-# Run after the master chunk to confirm all renames and merges applied correctly
-# Position and Photo variants should no longer appear
+  # Read the shapefile
+  dat = terra::vect(pt_files[i])
 
-pt_names_clean = data.frame()
+  # Get the filename without the folder path
+  dat_name = basename(pt_files[i])
 
-for (i in seq_along(pt_data_clean)) {
-  fname = basename(pt_files[i])
-  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
-  pt_names_clean = rbind(pt_names_clean, data.frame(year = yr, col_names = names(pt_data_clean[[i]])))
-}
+  # Find the location of the 4-digit year in the filename
+  name_ind = regexpr("[0-9]{4}", dat_name)
 
-colnames_count_yrs_clean = pt_names_clean %>%
-  dplyr::summarise(
-    Count = dplyr::n_distinct(year),
-    Years = paste(sort(unique(year)), collapse = ", "),
-    .by = col_names
-  ) %>%
-  dplyr::arrange(dplyr::desc(Count), col_names)
+  # Extract the year
+  yr = as.numeric(substr(dat_name, name_ind, name_ind + 3))
 
-names(colnames_count_yrs_clean)[1] = "Col_Name"
-
-kable(colnames_count_yrs_clean)
-```
-
-```{r}
-# ── Compare original vs cleaned cover values for ALL files ─────────────────────
-# Reads each file from disk and compares against pt_data_clean
-
-for (i in seq_along(pt_files)) {
-  fname     = basename(pt_files[i])
-  dat_orig  = terra::as.data.frame(vect(pt_files[i]))
-  dat_clean = terra::as.data.frame(pt_data_clean[[i]])
-  
-  cover_orig = names(dat_orig)[grepl("cover", names(dat_orig), ignore.case = TRUE)]
-  
-  cat("\n──────────────────────────────────────────\n")
-  cat("File:", fname, "\n\n")
-  
-  for (col in cover_orig) {
-    orig_vals  = unique(trimws(as.character(dat_orig[[col]])))
-    orig_vals  = orig_vals[!is.na(orig_vals) & orig_vals != ""]
-    
-    clean_vals = if (col %in% names(dat_clean)) {
-      unique(dat_clean[[col]])
-    } else {
-      NA
-    }
-    clean_vals = clean_vals[!is.na(clean_vals)]
-    
-    # Flag if any value still has % or if lengths differ
-    has_pct   = any(grepl("%", as.character(clean_vals)))
-    flag      = if (has_pct) "  *** % STILL PRESENT ***" else ""
-    
-    cat("  Column:", col, flag, "\n")
-    cat("    Original:", paste(head(orig_vals,  5), collapse = " | "), "\n")
-    cat("    Cleaned: ", paste(head(clean_vals, 5), collapse = " | "), "\n\n")
-  }
-}
-```
-
-```{r}
-# ── Check row counts per file in pt_data_clean ────────────────────────────────
-# If all files show the same row count something went wrong loading them
-
-for (i in seq_along(pt_data_clean)) {
-  fname = basename(pt_files[i])
-  n_clean = nrow(terra::as.data.frame(pt_data_clean[[i]]))
-  n_orig  = nrow(terra::as.data.frame(vect(pt_files[i])))
-  flag    = if (n_clean != n_orig) "*** MISMATCH ***" else "ok"
-  cat(fname, "| orig:", n_orig, "| clean:", n_clean, "|", flag, "\n")
-}
-```
-
-```{r}
-# ── PositionIn value counts across all files ───────────────────────────────────
-
-for (i in seq_along(pt_data_clean)) {
-  fname = basename(pt_files[i])
-  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
-  df    = terra::as.data.frame(pt_data_clean[[i]])
-  
-  if (!"PositionIn" %in% names(df)) next
-  
-  vals     = trimws(as.character(df$PositionIn))
-  vals[vals == ""] = NA
-  
-  counts   = table(vals, useNA = "always")
-  total    = nrow(df)
-  n_na     = sum(is.na(vals))
-  
-  cat("Year:", yr, "| Total rows:", total, "| NAs:", n_na, "\n")
-  print(counts)
-  cat("\n")
-}
-```
-
-```{r}
-# ── WH_Weevil_Dam value counts across all files ────────────────────────────────
-
-for (i in seq_along(pt_data_clean)) {
-  fname = basename(pt_files[i])
-  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
-  df    = terra::as.data.frame(pt_data_clean[[i]])
-  
-  if (!"WH_Weevil_Dam" %in% names(df)) next
-  
-  vals          = trimws(as.character(df$WH_Weevil_Dam))
-  vals[vals == ""] = NA
-  
-  counts = table(vals, useNA = "always")
-  total  = nrow(df)
-  n_na   = sum(is.na(vals))
-  
-  cat("Year:", yr, "| Total rows:", total, "| NAs:", n_na, "\n")
-  print(counts)
-  cat("\n")
-}
-```
-
-
-
-
-```{r}
-# ── Date-related column names across all files ─────────────────────────────────
-
-for (i in seq_along(pt_data_clean)) {
-  fname = basename(pt_files[i])
-  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
-  df    = terra::as.data.frame(pt_data_clean[[i]])
-  
-  present = names(df)[grepl("date|time", names(df), ignore.case = TRUE)]
-  
-  cat("Year:", yr, "->", paste(present, collapse = " | "), "\n")
-}
-```
-```{r}
-# ── Date-related column sample values across all files ─────────────────────────
-
-for (i in seq_along(pt_data_clean)) {
-  fname = basename(pt_files[i])
-  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
-  df    = terra::as.data.frame(pt_data_clean[[i]])
-  
-  present = names(df)[grepl("date|time", names(df), ignore.case = TRUE)]
-  if (length(present) == 0) next
-  
-  cat("\nYear:", yr, "\n")
-  for (col in present) {
-    sample_vals = head(unique(trimws(as.character(df[[col]]))), 5)
-    cat("  ", col, "->", paste(sample_vals, collapse = " | "), "\n")
-  }
-}
-```
-
-
-```{r}
-# ── NOTE: GPS Time Zone Verification Needed ────────────────────────────────────
-# GPS_Date is read as POSIXct with UTC label by terra, but this does NOT
-# confirm the GPS was configured in UTC during data collection.
-# GPS_Time is stored as character in 12h format (e.g. 09:04:55am) with no
-# timezone information attached.
-#
-# 
-# Confirm with field team: what timezone was the GPS device configured in
-# during data collection? (likely America/Los_Angeles = PDT UTC-7 in summer,
-# PST UTC-8 in winter)
-#
-# If GPS was in local LA time -> add 7h (PDT) or 8h (PST) to get UTC
-# If GPS was already in UTC   -> no conversion needed
-# ------------------------------------------------------------------------------
-```
-
-
-```{r}
-# ── Value counts for Reprodtive, Flowering, Spp1_Flowe across all files ────────
-
-target_cols = c("Reprodtive", "Flowering", "Spp1_Flowe")
-
-for (i in seq_along(pt_data_clean)) {
-  fname = basename(pt_files[i])
-  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
-  df    = terra::as.data.frame(pt_data_clean[[i]])
-  
-  present = target_cols[target_cols %in% names(df)]
-  if (length(present) == 0) next
-  
-  cat("\n──────────────────────────────────────────\n")
-  cat("Year:", yr, "| Total rows:", nrow(df), "\n\n")
-  
-  for (col in present) {
-    vals             = trimws(as.character(df[[col]]))
-    vals[vals == ""] = NA
-    n_na             = sum(is.na(vals))
-    counts           = table(vals, useNA = "always")
-    
-    cat("  Column:", col, "| NAs:", n_na, "\n")
-    print(counts)
-    cat("\n")
-  }
-}
-```
-
-
-
-```{r}
-# ── Export all cleaned files to Excel ─────────────────────────────────────────
-# One sheet per year, saved to your Box folder
-
-library(openxlsx)
-
-wb = createWorkbook()
-
-for (i in seq_along(pt_data_clean)) {
-  fname = basename(pt_files[i])
-  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
-  
-  # Read from pt_data_clean, NOT from disk
-  df = terra::as.data.frame(pt_data_clean[[i]])
-  
-  addWorksheet(wb, sheetName = as.character(yr))
-  writeData(wb, sheet = as.character(yr), df, headerStyle = createStyle(
-    textDecoration = "bold",
-    fgFill         = "#4472C4",
-    fontColour     = "#FFFFFF"
-  ))
-}
-
-# output_path = "C:/Users/mcontreras65/Box/NASA-IAV/classification/data/model_inputs/shapefiles/maria_cstars_all_field_data/delta_cleaned_data.xlsx"
-# saveWorkbook(wb, output_path, overwrite = TRUE)
-# cat("File saved to:", output_path, "\n")
-```
-
-
-```{r}
-# ── Compare Preassigne, newPatch and Assignment original vs cleaned 2019 and 2020
-
-for (i in seq_along(pt_files)) {
-  fname = basename(pt_files[i])
-  yr    = as.numeric(substr(fname, regexpr("[0-9]{4}", fname), regexpr("[0-9]{4}", fname) + 3))
-  
-  if (!yr %in% c(2019, 2020)) next
-  
-  dat_orig  = terra::as.data.frame(vect(pt_files[i]))
-  dat_clean = terra::as.data.frame(pt_data_clean[[i]])
-  
-  cat("\n──────────────────────────────────────────\n")
-  cat("Year:", yr, "| Total rows:", nrow(dat_orig), "\n\n")
-  
-  # Compare Preassigne and newPatch original vs cleaned
-  for (col in c("Preassigne", "newPatch")) {
-    if (!col %in% names(dat_orig)) {
-      cat("  Column", col, "not found in original\n\n")
-      next
-    }
-    orig  = trimws(as.character(dat_orig[[col]]));  orig[orig == ""]   = NA
-    clean = trimws(as.character(dat_clean[[col]])); clean[clean == ""] = NA
-    
-    cat("  Column:", col, "\n")
-    cat("    Original: "); print(table(orig,  useNA = "always"))
-    cat("    Cleaned:  "); print(table(clean, useNA = "always"))
-    cat("\n")
-  }
-  
-  # Show resulting Assignment column
-  cat("  Column: Assignment (new)\n")
-  if (!"Assignment" %in% names(dat_clean)) {
-    cat("    Assignment not found in cleaned\n\n")
-  } else {
-    clean_assign = trimws(as.character(dat_clean$Assignment))
-    clean_assign[clean_assign == ""] = NA
-    cat("    Cleaned:  "); print(table(clean_assign, useNA = "always"))
-    cat("\n")
-  }
-}
-```
-```{r}
-# ── Export change log to Word document ────────────────────────────────────────
-
-library(openxlsx)
-
-changes = data.frame(
-  Category = c(
-    "Simple Rename", "Simple Rename", "Simple Rename",
-    "Rake Rename", "Rake Rename",
-    "Column Merge",
-    rep("Columns Removed", 22),
-    "Value Cleaning", "Value Cleaning",
-    rep("PositionIn Standardization", 4),
-    rep("Preassigne Standardization", 2),
-    rep("Revisit_ Standardization", 2),
-    rep("Assignment Creation 2019-2020", 3),
-    rep("Pending", 2)
-  ),
-  Detail = c(
-    "Position -> PositionIn",
-    "WH_Weevil_ -> WH_Weevil_Dam",
-    "Weevil_dam -> WH_Weevil_Dam",
-    "Rake_Speci, Rake_Spec3, Rake_Spec5... -> Rspecies_1 to Rspecies_6",
-    "Rake_Spec2, Rake_Spec4, Rake_Spec6... -> Rcover_1 to Rcover_6",
-    "Photo, Photos, Picture, Link_Photo -> Photo_Link",
-    "Northing", "Easting", "Feat_Name", "Datafile", "GPS_Week", "GPS_Second",
-    "Point_ID", "Data_Dicti", "POINT_X", "POINT_Y", "Filt_Pos", "Unfilt_Pos",
-    "Treated", "Corr_Type", "Max_PDOP", "Horz_Prec", "Max_HDOP", "Rcvr_Type",
-    "Team", "Lifeform", "Nutrient_I", "GNSS_Heigh",
-    "All cover columns: removed % sign, converted to numeric",
-    "Rake_Teeth: removed % sign, converted to numeric",
-    "Edge -> StartEnd", "Start -> StartEnd", "End -> StartEnd", "Middle -> Center",
-    "No -> NA (years 2015-2018, 2021-2023)", "Yes -> Random (years 2015-2018, 2021-2023)",
-    "No -> Random (2014 only)", "Yes -> Revisit (2014 only)",
-    "newPatch=Yes -> New", "Preassigne=Yes AND newPatch=No -> Random",
-    "Preassigne=No AND newPatch=No -> NA. Preassigne and newPatch columns dropped after.",
-    "Verify GPS timezone with field team before converting GPS_Time to UTC",
-    "Homogenize WH_Weevil_Dam values across years"
+  # Create a table containing the year and column names
+  out = data.frame(
+    year = yr,
+    col_names = names(dat)
   )
+
+  # Add the results to the combined table
+  pt_names = rbind(pt_names, out)
+}
+```
+
+
+## 5.2 Count How Often Each Column Name Appears
+
+Next, we count how many times each column name appears across the point
+shapefiles.
+
+If a column name appears in all 12 shapefiles, it is consistently named
+across the datasets.
+
+If it appears in fewer than 12 shapefiles, there are several possible
+explanations:
+
+- The column has a different name in some years.
+- The information was not collected in every year.
+- The column was added or discontinued during the study.
+
+This step helps identify columns that need further examination.
+
+```{r}
+# Count how many times each column name appears
+colnames_count = pt_names %>%
+  dplyr::count(col_names, name = "Count", sort = TRUE)
+
+# Display the results as a table
+knitr::kable(colnames_count)
+```
+
+
+The `Count` column indicates how many times each column name appears.
+
+Because there are 12 point shapefiles, columns that appear in every
+shapefile should have a count of 12.
+
+**Note:** This assumes that each shapefile contains only one column
+with a given name.
+
+
+## 5.3 Identify Column Names Common to All Shapefiles
+
+Some columns have the same name in every shapefile.
+
+These columns do not need to be renamed before combining the datasets,
+although their values may still require cleaning.
+
+We identify these columns by selecting names that appear in all point
+shapefiles.
+
+```{r}
+# Get the total number of point shapefiles
+n_pt_files = length(pt_files)
+
+# Identify column names found in every shapefile
+cn_all = colnames_count %>%
+  dplyr::filter(Count == n_pt_files) %>%
+  dplyr::rename(Col_Name = col_names)
+
+# Display the number of common columns
+print(paste("There are", nrow(cn_all),
+            "column names shared by all point shapefiles."))
+
+# Display the common column names
+knitr::kable(cn_all)
+```
+
+
+The resulting `cn_all` dataframe contains the names of columns shared
+by all point shapefiles.
+
+We will use these column names when creating the initial combined dataset
+in Section 5.
+
+
+## 5.4 Identify Column Names That Differ Between Shapefiles
+
+Next, we identify columns that do not appear in every shapefile.
+
+These columns require additional review to determine whether they:
+
+- Contain the same information as another column with a different name.
+- Were only collected in certain years.
+- Are unnecessary for the final dataset.
+
+```{r}
+# Identify column names that are not shared by every shapefile
+cn_missing = colnames_count %>%
+  dplyr::filter(Count < n_pt_files) %>%
+  dplyr::rename(Col_Name = col_names) %>%
+  dplyr::arrange(dplyr::desc(Count))
+
+# Display the number of inconsistent column names
+print(paste("There are", nrow(cn_missing),
+            "column names that are not shared by all point shapefiles."))
+
+# Display the results
+knitr::kable(cn_missing)
+```
+
+
+The resulting `cn_missing` dataframe contains columns that need to be
+reviewed before combining the datasets.
+
+
+## 5.5 Identify Columns That Are Not Needed
+
+Some columns contain GPS metadata, processing information, or other
+attributes that are not needed for the final analysis.
+
+We create a list called `remove` containing these column names.
+
+This list will help us distinguish unnecessary columns from columns that
+need to be standardized.
+
+**Important:** Creating this list does not delete any columns from the
+original shapefiles.
+
+```{r}
+# Column names that are not needed in the final dataset
+remove = c(
+  "Easting", "Northing", "Datafile", "Feat_Name",
+  "Corr_Type", "Filt_Pos", "GPS_Second", "GPS_Week",
+  "Horz_Prec", "Max_PDOP", "Point_ID", "Unfilt_Pos",
+  "Team", "Data_Dicti", "GNSS_Heigh", "Lifeform",
+  "Max_HDOP", "Nutrient_I", "POINT_X", "POINT_Y",
+  "Rcvr_Type", "Std_Dev", "Vert_Prec", "Treated"
+)
+```
+
+
+## 5.6 Identify Columns That Still Need to Be Standardized
+
+Now that we have identified unnecessary columns, we can remove their names
+from the list of inconsistent columns.
+
+This makes it easier to focus on columns that need to be renamed,
+combined, or otherwise standardized.
+
+The code below updates `cn_missing` by excluding column names listed
+in `remove`.
+
+**Note:** This only changes the list of column names. It does not
+remove columns from the original shapefiles.
+
+```{r}
+# Remove unnecessary column names from the review list
+cn_missing = cn_missing %>%
+  dplyr::filter(!Col_Name %in% remove)
+
+# Display the remaining columns that need to be reviewed
+knitr::kable(cn_missing)
+```
+
+
+The remaining columns have been reviewed to determine how they should
+be handled during data integration.
+
+The following summarizes the standardization decisions.
+
+
+### 5.6.1 Columns Added in Later Years
+
+Some information was only collected in later years.
+
+These columns should be retained in the combined dataset, with `NA`
+(missing values) assigned to observations from years when the information
+was not collected.
+
+Columns include:
+
+- `MatDensity`
+- `Color`
+- `Microsysti`
+- `Canopy`
+- Additional rake species and cover columns
+
+These columns will be addressed in Section 5.
+
+
+### 5.6.2 Position Within a Vegetation Patch
+
+The columns `Position` and `PositionIn` describe where an observation
+was collected within a vegetation patch.
+
+However, different years use different column names and categories.
+
+We will standardize the column name to `PositionIn`.
+
+| Original value | Standardized value |
+|---|---|
+| Middle | Center |
+| Center | Center |
+| Start | StartEnd |
+| End | StartEnd |
+| Edge | StartEnd |
+| StartEnd | StartEnd |
+| NA | NA |
+
+The final column will contain only `Center`, `StartEnd`, or `NA`.
+
+
+### 5.6.3 Water Hyacinth Weevil Damage
+
+Two column names were used to record water hyacinth weevil damage:
+
+- `WH_Weevil_`
+- `Weevil_dam`
+
+These will be standardized to `WH_Weevil_Dam`.
+
+The original columns contain slightly different categories.
+
+The value `No` will be changed to `None`. Other existing categories,
+including `Trace` and `Yes`, will be retained.
+
+
+### 5.6.4 Photo Information
+
+Photo information was recorded using several different column names:
+
+- `Photos`
+- `Link_Photo`
+- `Photo`
+- `Photo_Link`
+- `Picture`
+
+These will be combined into a single column called `Photo_Link`.
+
+Some shapefiles contain more than one photo column. When this occurs,
+we need to combine the information without losing existing values.
+
+
+### 5.6.5 Comments
+
+Comments were recorded in columns named `Comments` and `Comment`.
+
+These will be combined into a single column called `Comments`.
+
+When both columns are present, we need to account for values recorded
+in either column.
+
+
+### 5.6.6 Field Observation Assignment
+
+Several columns describe how field observation locations were selected
+or classified:
+
+- `Preassigne`
+- `Assignment`
+- `newPatch`
+- `Revisit_`
+
+These will be combined into a single column called `Assignment`.
+
+The final categories will be:
+
+- `Random`
+- `Revisit`
+- `New`
+- `NA`
+
+Because the original columns use different combinations of `Yes`, `No`,
+and categorical values, the appropriate corrections depend on which
+columns were recorded together.
+
+These rules will be applied in Section 5.
+
+**Important:** Some combinations of the original values are ambiguous
+and need to be reviewed before finalizing the assignment categories.
+
+
+### 5.6.7 Flowering and Reproductive Status
+
+Reproductive status was recorded using the following column names:
+
+- `Reprodtive`
+- `Flowering`
+- `Spp1_Flowe`
+
+These will be standardized into a single column called `Reproductive`.
+
+For columns that record flowering as `Yes` or `No`:
+
+- `Yes` will be changed to `Flowering`.
+- `No` will remain `No`.
+
+Other existing categories, such as `Budding`, will be retained.
+
+
+### 5.6.8 SAV Adjacent to Water
+
+Two columns were used to record whether SAV was adjacent to water:
+
+- `SAV_adj_wa`
+- `SAV_Adjace`
+
+Both will be standardized to `SAV_adj_water`.
+
+
+### 5.6.9 Rake Species and Cover
+
+The rake sampling data contain species and cover measurements recorded
+in alternating columns.
+
+The original columns include `Rake_Spe1` through `Rake_Spe12`.
+
+These will be standardized into species and cover columns:
+
+- `Rake_Sp_1` through `Rake_Sp_6`
+- `Rake_Sp_Cov_1` through `Rake_Sp_Cov_6`
+
+Each species column will be paired with its corresponding cover column.
+
+The rake cover values will also need to be converted from character
+values to numeric values in Section 6.
+
+
+## 5.7 Identify the Columns to Retain in the Final Dataset
+
+Finally, we create a list of the columns intended for the cleaned dataset.
+
+This list documents the information we want to retain after combining
+and standardizing the shapefiles.
+
+Some column names will be changed during the cleaning process, so this
+list is a reference for the intended final dataset rather than a list
+of columns that already exist.
+
+```{r}
+# Columns intended for the final cleaned dataset
+final_cols = c(
+  "ID", "GPS_Date", "GPS_Time",
+  "Species_1", "Cover_1",
+  "Species_2", "Cover_2",
+  "Species_3", "Cover_3",
+  "Species_4", "Cover_4",
+  "Species_5", "Cover_5",
+  "Cover_dry", "Cover_epi_", "Cover_wate",
+  "Assignment", "Patch_Leng", "Patch_Widt",
+  "Patch_Orie", "Location", "PositionIn",
+  "MatDensity", "WH_Weevil_Dam", "Reproductive",
+  "Color", "Canopy", "SAV_adj_water",
+  "Secchi_Dep", "Secchi___B", "Microsysti",
+  "Rake_Teeth", "Rake_Speci", "Rake_Spec2", 
+  "Rake_Spec3", "Rake_Spec4", "Rake_Spec5", 
+  "Rake_Spec6", "Rake_Spec7", "Rake_Spec8", 
+  "Rake_Spec9", "Photo_Link", "Comments"
+)
+```
+
+This completes the review of column names and identifies the
+standardization rules needed to combine the datasets.
+
+In Section 5, we will apply these corrections and create the combined
+point dataset.
+
+
+# 6. Combine Point Shapefiles into a Single Dataset
+
+Now that we have identified differences in column names and values, we can
+combine the point shapefiles into a single dataset.
+
+We will first combine columns that are present in every shapefile. Then, we
+will add columns that have different names across years, standardizing their
+names and values as needed.
+
+All changes are made to objects in R. The original shapefiles are not
+modified or overwritten.
+
+**Important:** The observations are combined in the order of `pt_files`.
+When adding standardized columns, we must use the same file order so that
+values are assigned to the correct observations.
+
+
+## 6.1 Combine Columns Shared by All Shapefiles
+
+We will start by combining columns that are present in every point shapefile.
+
+Before combining the datasets, we need to ensure that they use the same
+coordinate reference system (CRS). A CRS defines how geographic locations
+are represented as coordinates.
+
+The final dataset will use WGS84 / UTM Zone 10N (EPSG:32610).
+
+The code below:
+
+1. Opens each point shapefile.
+2. Assigns a CRS if one is missing.
+3. Reprojects the shapefile to EPSG:32610.
+4. Keeps only columns shared by all shapefiles.
+5. Adds the observations to a single combined SpatVector.
+
+**Important — 2015 CRS needs verification:** The 2015 shapefile is missing
+its CRS information. NAD83 / UTM Zone 10N is assumed because the 2014
+shapefile was exported from Pathfinder with this CRS. However, the 2015
+data may actually use WGS84 / UTM Zone 10N. The 2015 dataset should
+either be re-exported from Pathfinder with its correct CRS information
+or its original CRS verified.
+
+```{r, message=FALSE, warning=FALSE}
+# Get the column names shared by all point shapefiles
+start_cols = unique(cn_all$Col_Name)
+
+# Create an empty SpatVector to store the combined observations
+dat = terra::vect()
+
+# Loop through each point shapefile
+for (i in seq_along(pt_files)) {
+
+  # Read the original shapefile
+  d = terra::vect(pt_files[i])
+
+  # IMPORTANT - 2015 CRS NEEDS VERIFICATION
+  # The 2015 shapefile is missing its CRS information.
+  # NAD83 / UTM Zone 10N is assumed because the 2014 shapefile was
+  # exported from Pathfinder with this CRS.
+  #
+  # The 2015 data may actually use WGS84 / UTM Zone 10N instead.
+  # The file should be re-exported from Pathfinder with its correct
+  # CRS information, or the original CRS should be verified.
+
+  if (terra::crs(d) == "") {
+    terra::crs(d) = "EPSG:26910"
+  }
+
+  # Reproject all shapefiles to WGS84 / UTM Zone 10N
+  d = terra::project(d, "EPSG:32610")
+
+  # Keep only columns that are present in every shapefile
+  d_out = d %>%
+    dplyr::select(dplyr::all_of(start_cols))
+
+  # Add observations to the combined dataset
+  dat = rbind(dat, d_out)
+}
+
+# Display the number of observations and columns
+dim(dat)
+```
+
+
+The resulting `dat` object is a `SpatVector` containing observations
+from all point shapefiles.
+
+At this stage, it only contains columns shared across every shapefile.
+Additional columns will be added in the following sections.
+
+
+## 6.2 Standardize Comments Columns
+
+Field comments were recorded using different column names:
+
+- `Comments`
+- `Comment`
+
+We want all comments stored in one column called `Comments`.
+
+Some shapefiles contain both columns. When this occurs, we will retain
+the existing `Comments` value and use `Comment` to fill missing values.
+
+If neither column contains a value, the observation will have `NA`.
+
+```{r, warning=FALSE, message=FALSE}
+# Create an empty vector to store comments from all shapefiles
+comments = vector()
+
+# Loop through each point shapefile
+for (i in seq_along(pt_files)) {
+
+  # Read the shapefile
+  d = terra::vect(pt_files[i])
+
+  # Start with missing values for all observations
+  comment = rep(NA_character_, nrow(d))
+
+  # Use values from the Comments column, if it exists
+  if ("Comments" %in% names(d)) {
+    comment = as.character(d$Comments)
+  }
+
+  # Treat empty strings as missing values
+  comment[!is.na(comment) & trimws(comment) == ""] = NA
+
+  # Use Comment to fill missing values in Comments
+  if ("Comment" %in% names(d)) {
+
+    comment2 = as.character(d$Comment)
+    comment2[!is.na(comment2) & trimws(comment2) == ""] = NA
+
+    # Find rows where Comments is missing but Comment has a value
+    missing = which(is.na(comment) & !is.na(comment2))
+
+    # Fill missing comments
+    comment[missing] = comment2[missing]
+  }
+
+  # Add comments from this shapefile to the combined vector
+  comments = c(comments, comment)
+}
+
+# Add the standardized Comments column to the combined dataset
+dat$Comments = comments
+```
+
+
+**Note:** If both columns contain different, nonmissing comments for the
+same observation, this rule retains the value from `Comments`. These
+cases should be reviewed if both entries may contain useful information.
+
+
+## 6.3 Standardize Water Hyacinth Weevil Damage Columns
+
+Water hyacinth weevil damage was recorded using two different column names:
+
+- `WH_Weevil_`
+- `Weevil_dam`
+
+Both columns describe weevil damage and will be combined into a single
+column called `WH_Weevil_Dam`.
+
+The original datasets also use slightly different categories:
+
+| Original value | Standardized value |
+|---|---|
+| No | None |
+| None | None |
+| Trace | Trace |
+| Yes | Yes |
+| NA | NA |
+
+The value `No` will be changed to `None`. All other values will be retained.
+
+```{r, warning=FALSE, message=FALSE}
+# Create an empty vector to store weevil damage observations
+WH_Weevil_Dam = vector()
+
+# Loop through each point shapefile
+for (i in seq_along(pt_files)) {
+
+  # Read the shapefile
+  d = terra::vect(pt_files[i])
+
+  # Find the column containing weevil damage information
+  x = grep("Weev", names(d), ignore.case = TRUE)
+
+  # Extract the values if the column exists
+  if (length(x) == 1) {
+
+    wh = as.character(terra::values(d[, x])[[1]])
+
+  } else if (length(x) == 0) {
+
+    # Assign missing values if no weevil damage column exists
+    wh = rep(NA_character_, nrow(d))
+
+  } else {
+
+    # Stop if multiple matching columns are found
+    stop(paste("Multiple weevil damage columns found in:",
+               basename(pt_files[i])))
+  }
+
+  # Standardize No to None
+  wh[wh == "No"] = "None"
+
+  # Add values to the combined vector
+  WH_Weevil_Dam = c(WH_Weevil_Dam, wh)
+}
+
+# Add the standardized column to the combined dataset
+dat$WH_Weevil_Dam = WH_Weevil_Dam
+```
+
+
+## 6.4 Standardize Photo Columns
+
+Photo information was recorded using several different column names:
+
+- `Photos`
+- `Link_Photo`
+- `Photo`
+- `Photo_Link`
+- `Picture`
+
+We want to combine these into one column called `Photo_Link`.
+
+Most shapefiles contain only one photo column. However, the 2023
+shapefile contains two photo columns.
+
+When multiple photo columns are present, we will retain values from
+the first column and use the remaining columns to fill missing values.
+
+If no photo column exists, the observation will receive `NA`.
+
+```{r, message=FALSE, warning=FALSE}
+# Create an empty vector to store photo information
+Photo_Link = vector()
+
+# Loop through each point shapefile
+for (i in seq_along(pt_files)) {
+
+  # Read the shapefile
+  d = terra::vect(pt_files[i])
+
+  # Find columns containing photo information
+  x = which(names(d) %in%
+              c("Photos", "Link_Photo", "Photo", "Photo_Link", "Picture"))
+
+  # Start with missing values for all observations
+  pl = rep(NA_character_, nrow(d))
+
+  # Combine values from any photo columns found
+  if (length(x) > 0) {
+
+    for (j in x) {
+
+      # Get values from the current photo column
+      photo = as.character(terra::values(d[, j])[[1]])
+
+      # Treat empty strings as missing values
+      photo[!is.na(photo) & trimws(photo) == ""] = NA
+
+      # Fill missing values without overwriting existing photo information
+      missing = which(is.na(pl) & !is.na(photo))
+      pl[missing] = photo[missing]
+    }
+  }
+
+  # Add photo information to the combined vector
+  Photo_Link = c(Photo_Link, pl)
+}
+
+# Add the standardized Photo_Link column to the combined dataset
+dat$Photo_Link = Photo_Link
+```
+
+**Note:** If an observation contains different, nonmissing photo values
+in multiple columns, this code retains the first value encountered.
+Additional photo information would need to be handled separately if
+multiple photos should be preserved.
+
+
+## 6.5 Standardize Position Within a Vegetation Patch
+
+The columns `Position` and `PositionIn` describe where an observation
+was collected within a vegetation patch.
+
+Different years use different names and categories. We will combine
+these into one column called `PositionIn`.
+
+The standardized values will be `Center`, `StartEnd`, and `NA`.
+
+| Original value | Standardized value |
+|---|---|
+| Middle | Center |
+| Center | Center |
+| Start | StartEnd |
+| End | StartEnd |
+| Edge | StartEnd |
+| StartEnd | StartEnd |
+| NA | NA |
+
+```{r, warning=FALSE, message=FALSE}
+# Create an empty vector to store position information
+PositionIn = vector()
+
+# Loop through each point shapefile
+for (i in seq_along(pt_files)) {
+
+  # Read the shapefile
+  d = terra::vect(pt_files[i])
+
+  # Find the position column
+  x = which(names(d) %in% c("Position", "PositionIn"))
+
+  # Extract values if the column exists
+  if (length(x) == 1) {
+
+    pos = as.character(terra::values(d[, x])[[1]])
+
+  } else if (length(x) == 0) {
+
+    # Assign NA if no position column exists
+    pos = rep(NA_character_, nrow(d))
+
+  } else {
+
+    # Stop if both columns exist and need to be combined
+    stop(paste("Multiple position columns found in:",
+               basename(pt_files[i])))
+  }
+
+  # Standardize position categories
+  pos[pos == "Middle"] = "Center"
+  pos[pos %in% c("Start", "End", "Edge")] = "StartEnd"
+
+  # Add values to the combined vector
+  PositionIn = c(PositionIn, pos)
+}
+
+# Add the standardized column to the combined dataset
+dat$PositionIn = PositionIn
+```
+
+
+## 6.6 Standardize Field Observation Assignment
+
+Different years used different columns to describe how field observation
+locations were selected or classified.
+
+These include:
+
+- `Preassigne`
+- `Assignment`
+- `newPatch`
+- `Revisit_`
+
+We want to combine these into one column called `Assignment`.
+
+The final categories are `Random`, `Revisit`, `New`, and `NA`.
+
+The appropriate correction depends on which original column was used.
+In some years, `Preassigne` and `newPatch` were recorded together and
+must be interpreted as a pair.
+
+**Important:** One of the rules below is provisional and needs group
+review. It is marked clearly in the code so it can be revisited later.
+
+```{r, warning=FALSE, message=FALSE}
+# Create an empty vector to store assignment categories
+Assignment = vector()
+
+# Loop through each point shapefile
+for (i in seq_along(pt_files)) {
+
+  # Read the shapefile
+  d = terra::vect(pt_files[i])
+
+  # Find assignment-related columns
+  cn = names(d)[names(d) %in%
+                  c("Preassigne", "Assignment", "newPatch", "Revisit_")]
+
+  # Start with missing values for all observations
+  a = rep(NA_character_, nrow(d))
+
+  # Case 1: Only one assignment-related column exists
+  if (length(cn) == 1) {
+
+    a = as.character(terra::values(d[, cn])[[1]])
+
+    # Revisit_ uses Yes/No to indicate revisit status
+    if (cn == "Revisit_") {
+      a[a == "No"] = "Random"
+      a[a == "Yes"] = "Revisit"
+    }
+
+    # Preassigne indicates whether a location was randomly preassigned
+    if (cn == "Preassigne") {
+      a[a == "No"] = NA
+      a[a == "Yes"] = "Random"
+    }
+
+    # newPatch indicates whether the observation was a new patch
+    if (cn == "newPatch") {
+      a[a == "No"] = NA
+      a[a == "Yes"] = "New"
+    }
+  }
+
+  # Case 2: Both Preassigne and newPatch exist
+  if (all(c("Preassigne", "newPatch") %in% cn)) {
+
+    pa = as.character(d$Preassigne)
+    np = as.character(d$newPatch)
+
+    # New patch that was not randomly preassigned
+    a[pa == "No" & np == "Yes"] = "New"
+
+    # PROVISIONAL RULE - NEEDS GROUP REVIEW
+    # Preassigne = No and newPatch = No is assigned "Revisit".
+    # These observations were not randomly preassigned and were not
+    # new patches. They are assumed to be revisits, but their actual
+    # assignment type is uncertain.
+    # This rule may need to be changed to NA.
+    a[pa == "No" & np == "No"] = "Revisit"
+
+    # Randomly preassigned observations
+    a[pa == "Yes" & np == "Yes"] = "Random"
+    a[pa == "Yes" & np == "No"] = "Random"
+
+    # Not preassigned, with missing newPatch information
+    a[pa == "No" & is.na(np)] = "Revisit"
+  }
+
+  # Stop if an unexpected combination of columns is found
+  if (length(cn) > 1 &&
+      !setequal(cn, c("Preassigne", "newPatch"))) {
+
+    stop(paste("Unexpected assignment columns in:",
+               basename(pt_files[i])))
+  }
+
+  # Add values to the combined vector
+  Assignment = c(Assignment, a)
+}
+
+# Add the standardized Assignment column to the combined dataset
+dat$Assignment = Assignment
+```
+
+The provisional assignment rule has been retained from your original
+workflow. It should be reviewed with the research group before the
+dataset is considered final.
+
+
+## 6.7 Standardize Flowering and Reproductive Status
+
+Reproductive status was recorded using different column names:
+
+- `Reprodtive`
+- `Flowering`
+- `Spp1_Flowe`
+
+These will be combined into one column called `Reproductive`.
+
+Some years recorded reproductive status as `Yes` or `No`, while others
+used more descriptive categories such as `Flowering` or `Budding`.
+
+We will change `Yes` to `Flowering` and retain the other categories.
+
+```{r, warning=FALSE, message=FALSE}
+# Create an empty vector to store reproductive status
+Reproductive = vector()
+
+# Loop through each point shapefile
+for (i in seq_along(pt_files)) {
+
+  # Read the shapefile
+  d = terra::vect(pt_files[i])
+
+  # Find the reproductive status column
+  x = which(names(d) %in%
+              c("Reprodtive", "Flowering", "Spp1_Flowe"))
+
+  # Extract values if the column exists
+  if (length(x) == 1) {
+
+    rep_status = as.character(terra::values(d[, x])[[1]])
+
+  } else if (length(x) == 0) {
+
+    rep_status = rep(NA_character_, nrow(d))
+
+  } else {
+
+    stop(paste("Multiple reproductive status columns found in:",
+               basename(pt_files[i])))
+  }
+
+  # Standardize Yes to Flowering
+  rep_status[rep_status == "Yes"] = "Flowering"
+
+  # Add values to the combined vector
+  Reproductive = c(Reproductive, rep_status)
+}
+
+# Add the standardized column to the combined dataset
+dat$Reproductive = Reproductive
+```
+
+
+## 6.8 Standardize SAV Adjacent to Water Columns
+
+Two column names were used to record whether SAV was adjacent to water:
+
+- `SAV_adj_wa`
+- `SAV_Adjace`
+
+Both will be standardized to `SAV_adj_water`.
+
+The original values will be retained.
+
+```{r, message=FALSE, warning=FALSE}
+# Create an empty vector to store SAV adjacency observations
+SAV_adj_water = vector()
+
+# Loop through each point shapefile
+for (i in seq_along(pt_files)) {
+
+  # Read the shapefile
+  d = terra::vect(pt_files[i])
+
+  # Find the SAV adjacency column
+  x = grep("SAV_adj", names(d), ignore.case = TRUE)
+
+  # Extract values if one matching column exists
+  if (length(x) == 1) {
+
+    sav = terra::values(d[, x])[[1]]
+
+  } else if (length(x) == 0) {
+
+    sav = rep(NA, nrow(d))
+
+  } else {
+
+    stop(paste("Multiple SAV adjacency columns found in:",
+               basename(pt_files[i])))
+  }
+
+  # Add values to the combined vector
+  SAV_adj_water = c(SAV_adj_water, sav)
+}
+
+# Add the standardized column to the combined dataset
+dat$SAV_adj_water = SAV_adj_water
+```
+
+
+## 6.9 Standardize Rake Species and Cover Columns
+
+Rake sampling data contain species names and their corresponding percent
+cover values.
+
+The rake columns always follow the same order:
+
+1. `Rake_Teeth`: Number of rake teeth.
+2. First species name.
+3. Percent cover of the first species.
+4. Second species name.
+5. Percent cover of the second species.
+6. Continue alternating species and cover columns.
+
+Most years contain up to five species and their corresponding cover
+values. Two years contain a sixth species and cover measurement.
+
+The original column names are not consistent with the intended final
+names, so we will rename them based on their position.
+
+For example:
+
+| Original column | Standardized column |
+|---|---|
+| Rake_Teeth | Rake_Teeth |
+| Rake_Speci | Rake_Sp_1 |
+| Rake_Spec2 | Rake_Sp_Cov_1 |
+| Rake_Spec3 | Rake_Sp_2 |
+| Rake_Spec4 | Rake_Sp_Cov_2 |
+| ... | ... |
+| Rake_Spec11 | Rake_Sp_6 |
+| Rake_Spec12 | Rake_Sp_Cov_6 |
+
+We will add missing rake columns as `NA` for years when fewer species
+were recorded.
+
+```{r, warning=FALSE, message=FALSE}
+# Create a list to store rake data from each shapefile
+rake_list = vector("list", length(pt_files))
+
+# Standardized rake column names
+rake_cols = c(
+  "Rake_Teeth",
+  paste0("Rake_Sp_", 1:6),
+  paste0("Rake_Sp_Cov_", 1:6)
 )
 
-wb = createWorkbook()
-addWorksheet(wb, "Change Log")
-writeData(wb, sheet = "Change Log", changes, headerStyle = createStyle(
-  textDecoration = "bold",
-  fgFill         = "#4472C4",
-  fontColour     = "#FFFFFF"
-))
-setColWidths(wb, sheet = "Change Log", cols = 1:2, widths = c(35, 70))
-
-# output_path = "C:/Users/mcontreras65/Box/NASA-IAV/classification/data/model_inputs/shapefiles/maria_cstars_all_field_data/delta_change_log.xlsx"
-# saveWorkbook(wb, output_path, overwrite = TRUE)
-# cat("Change log saved to:", output_path, "\n")
-```
-
-
-
-```{r}
-# ── Overwrite original shapefiles with cleaned versions ───────────────────────
-# WARNING: This will overwrite the original files permanently
-# Make sure pt_data_clean is up to date by running the master chunk first
-
-library(terra)
-
+# Loop through each point shapefile
 for (i in seq_along(pt_files)) {
-  writeVector(pt_data_clean[[i]], pt_files[i], overwrite = TRUE)
-  cat("Overwritten:", basename(pt_files[i]), "\n")
+
+  # Read the shapefile
+  d = terra::vect(pt_files[i])
+
+  # Find rake columns in their original order
+  x = grep("rake", names(d), ignore.case = TRUE)
+
+  # Extract rake attributes as a dataframe (without geometry)
+  rake_dat = as.data.frame(d[, x])
+
+  # Rename the first column
+  names(rake_dat)[1] = "Rake_Teeth"
+
+  # Identify alternating species and cover columns
+  species_cols = seq(2, ncol(rake_dat), 2)
+  cover_cols = seq(3, ncol(rake_dat), 2)
+
+  # Rename species columns
+  names(rake_dat)[species_cols] =
+    paste0("Rake_Sp_", seq_along(species_cols))
+
+  # Rename cover columns
+  names(rake_dat)[cover_cols] =
+    paste0("Rake_Sp_Cov_", seq_along(cover_cols))
+
+  # Add missing rake columns for years with fewer species
+  for (col in rake_cols) {
+    if (!col %in% names(rake_dat)) {
+      rake_dat[[col]] = NA
+    }
+  }
+
+  # Keep rake columns in the same order for every year
+  rake_dat = rake_dat[, rake_cols]
+
+  # Store this year's rake data
+  rake_list[[i]] = rake_dat
+}
+
+# Combine rake data from all years
+rake = do.call(rbind, rake_list)
+
+# Remove the original rake columns from the combined dataset
+x = grep("rake", names(dat), ignore.case = TRUE)
+
+if (length(x) > 0) {
+  dat = dat[, -x]
+}
+
+# Add the standardized rake columns
+for (col in names(rake)) {
+  dat[[col]] = rake[[col]]
 }
 ```
 
-
-```{r}
-# ── Check coordinate columns and geometry in all files ─────────────────────────
-
-i_check = 1
-dat      = vect(pt_files[i_check])
-
-cat("CRS of file:", crs(dat, describe = TRUE)$name, "\n\n")
-
-cat("Coordinate-related columns in attribute table:\n")
-coord_cols = names(dat)[grepl("utm|coord|x|y|lat|lon|east|north", 
-                               names(dat), ignore.case = TRUE)]
-print(coord_cols)
-
-cat("\nFirst 3 rows of geometry:\n")
-print(head(geom(dat), 3))
-```
+**Note:** The rake cover values may still contain percent signs. These
+will be removed and converted to numeric values in Section 6.
 
 
+## 6.10 Add Columns That Were Only Collected in Certain Years
 
+Some attributes were only collected in later years and are therefore
+missing from earlier shapefiles.
 
+These include:
 
+- `MatDensity`
+- `Color`
+- `Microsysti`
+- `Canopy`
 
-# List of fields to keep that are common enough or started later
-```{r}
-fav_info = c("MatDensity", "WH_Weevil_", "Color", "Treated", "Flowering",
-             "Spp1_Flowe", "Reprodtive", "Canopy", "Weevil_dam")
-sav_info = c("SAV_adj_wa", "Microsysti", "SAV_Adjace", "Rake_Spe11", "Rake_Spe12")
-other_info = c("Preassigne", "PositionIn", "Position", "newPatch", "Assignment",
-               "Photos", "Revisit_", "Link_Photo", "Photo_Link", "Picture",
-               "Photo")
-```
+We want to retain these attributes in the combined dataset.
 
+For years when an attribute was not collected, its values will be `NA`.
 
+```{r, warning=FALSE, message=FALSE}
+# Create empty vectors to store the additional attributes
+MatDensity = vector()
+Color = vector()
+Microsystis = vector()
+Canopy = vector()
 
-# List of fields that may be the same but with formatting difference
+# Loop through each point shapefile
+for (i in seq_along(pt_files)) {
 
-```{r}
-assignment = c("Preassigne", "newPatch", "Assignment", "Revisit_")
+  # Read the shapefile
+  d = terra::vect(pt_files[i])
 
-position = c("PositionIn", "Position", "Unfilt_Pos", "Filt_Pos")
+  # Mat density
+  x = grep("MatDensity", names(d), ignore.case = TRUE)
 
+  if (length(x) == 1) {
+    md = terra::values(d[, x])[[1]]
+  } else {
+    md = rep(NA, nrow(d))
+  }
 
-photo = c("Photos", "Link_Photo", "Photo_Link", "Picture", "Photo")
+  # Color
+  x = grep("Color", names(d), ignore.case = TRUE)
 
-wh_weevil = c("WH_Weevil_", "Weevil_dam")
+  if (length(x) == 1) {
+    col = terra::values(d[, x])[[1]]
+  } else {
+    col = rep(NA, nrow(d))
+  }
 
-sav_adj = c('SAV_adj_wa', "SAV_Adjace") # SAV_adj_water
+  # Microcystis
+  x = grep("Microsysti", names(d), ignore.case = TRUE)
 
+  if (length(x) == 1) {
+    mi = terra::values(d[, x])[[1]]
+  } else {
+    mi = rep(NA, nrow(d))
+  }
 
-```
+  # Canopy
+  x = grep("Canopy", names(d), ignore.case = TRUE)
 
+  if (length(x) == 1) {
+    ca = terra::values(d[, x])[[1]]
+  } else {
+    ca = rep(NA, nrow(d))
+  }
 
-```{r}
-output = data.frame()
-for (i in 1:length(pt_files)){
-  dat = vect(pt_files[i])
-  
-  x = which(names(dat) %in% assignment)
-  name_track = names(dat)[x]
-  name_track
-  name_out = paste0(name_track, collapse = "|")
-  
-  year = lubridate::year(dat$GPS_Date)[1]
-  
-  out = data.frame(ID = i, Fields = name_out, date = year)
-  # head(dat[[name_track]])
-  output = rbind(output, out)
+  # Add values to the combined vectors
+  MatDensity = c(MatDensity, md)
+  Color = c(Color, col)
+  Microsystis = c(Microsystis, mi)
+  Canopy = c(Canopy, ca)
 }
 
-kable(output)
+# Add the standardized columns to the combined dataset
+dat$MatDensity = MatDensity
+dat$Color = Color
+dat$Microsystis = Microsystis
+dat$Canopy = Canopy
 ```
 
+
+**Check the combined dataset**
+
+Before proceeding to Section 6, check that the combined dataset contains
+the expected number of observations and that the standardized columns
+were added correctly.
+
+```{r}
+# Display the number of observations and columns
+dim(dat)
+
+# Display the column names
+names(dat)
+
+# Check the standardized assignment categories
+table(dat$Assignment, useNA = "ifany")
+
+# Check the standardized position categories
+table(dat$PositionIn, useNA = "ifany")
+
+# Check reproductive status categories
+table(dat$Reproductive, useNA = "ifany")
+```
+
+The combined `dat` object is now ready for the final cleaning steps in
+Section 6, including converting percent-cover values to numeric,
+replacing missing-value codes, and renaming ambiguous columns.
+
+
+
+# 7. Clean Up the Final Dataset
+
+Now that the point shapefiles have been combined and their attributes
+standardized, we need to make a few final corrections.
+
+This section will:
+
+1. Assign a unique ID to each observation.
+2. Arrange columns in a consistent order.
+3. Convert percent-cover values from character to numeric.
+4. Replace -99 (a missing-data code) with NA.
+5. Rename abbreviated columns to make their meanings clearer.
+6. Check the final dataset before exporting it.
+
+All changes are made to the combined dataset in R. The original
+shapefiles are not modified.
+
+
+## 7.1 Assign Unique IDs and Reorder Columns
+
+The original shapefiles may contain observation IDs that repeat across
+years. We will assign each observation a new, unique ID in the combined
+dataset.
+
+We will also arrange the columns so that related information appears
+together, such as species observations, vegetation cover, environmental
+conditions, and rake sampling data.
+
+The column order does not affect the spatial data or analysis results,
+but it makes the attribute table easier to navigate.
+
+```{r}
+# Assign a unique ID to each observation in the combined dataset
+dat$ID = seq_len(nrow(dat))
+
+# Specify the desired column order
+col_order = c(
+  "ID", "GPS_Date", "GPS_Time",
+  "Species_1", "Cover_1",
+  "Species_2", "Cover_2",
+  "Species_3", "Cover_3",
+  "Species_4", "Cover_4",
+  "Species_5", "Cover_5",
+  "Cover_dry", "Cover_epi_", "Cover_wate",
+  "Location", "PositionIn", "Assignment",
+  "Patch_Leng", "Patch_Widt", "Patch_Orie",
+  "SAV_adj_water", "Depth_to_S", "Secchi_Dep",
+  "Secchi___B", "Microsystis", "MatDensity",
+  "WH_Weevil_Dam", "Reproductive", "Canopy", "Color",
+  "Rake_Teeth",
+  "Rake_Sp_1", "Rake_Sp_Cov_1",
+  "Rake_Sp_2", "Rake_Sp_Cov_2",
+  "Rake_Sp_3", "Rake_Sp_Cov_3",
+  "Rake_Sp_4", "Rake_Sp_Cov_4",
+  "Rake_Sp_5", "Rake_Sp_Cov_5",
+  "Rake_Sp_6", "Rake_Sp_Cov_6",
+  "Photo_Link", "Comments"
+)
+
+# Check whether any expected columns are missing
+missing_cols = setdiff(col_order, names(dat))
+
+if (length(missing_cols) > 0) {
+  stop(paste("Missing expected columns:",
+             paste(missing_cols, collapse = ", ")))
+}
+
+# Reorder columns while keeping the spatial geometry
+dat_ord = dat[, col_order]
+
+# Display the dimensions of the reordered dataset
+dim(dat_ord)
+```
+
+
+**Note:** This check deliberately stops the script if an expected column is missing rather than silently creating or removing fields. This helps identify problems introduced during data integration.
+
+
+## 7.2 Convert Percent-Cover Columns to Numeric
+
+Several vegetation cover columns contain percentages stored as
+character values (text), such as `"25%"` or `"100%"`.
+
+These values need to be converted to numeric values before they can
+be used in calculations or statistical analyses.
+
+We will remove the percent sign (`%`) and convert the remaining value
+to numeric.
+
+For example:
+
+| Original value | Cleaned value |
+|---|---|
+| `"25%"` | 25 |
+| `"50%"` | 50 |
+| `"100%"` | 100 |
+| `NA` | NA |
+
+The resulting values remain on a scale of 0–100, not 0–1.
+
+We use `mutate()` and `across()` to apply the correction to all columns
+beginning with `Cover_`.
+
+```{r}
+# Convert vegetation percent-cover columns from character to numeric
+dat_cor = dat_ord %>%
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::starts_with("Cover_"),
+      ~ as.numeric(stringr::str_remove(as.character(.x), "%"))
+    )
+  )
+```
+
+The `mutate()` function modifies the selected columns while retaining
+all other attributes and the spatial geometry.
+
+
+## 7.3 Replace Missing-Value Codes with NA
+
+Some numeric fields use `-99` to indicate that a measurement was
+not collected or was unavailable.
+
+In R, missing values should be represented by `NA` rather than `-99`.
+
+If we leave `-99` in these columns, R may treat it as a real
+measurement, which could affect calculations and statistical analyses.
+
+We will replace `-99` with `NA` in:
+
+- `Depth_to_S`: Depth to submerged aquatic vegetation.
+- `Secchi_Dep`: Secchi depth.
+- `Rake_Teeth`: Number of rake teeth.
+
+```{r}
+# Replace -99 with NA in the depth and rake measurements
+dat_cor$Depth_to_S[dat_cor$Depth_to_S == -99] = NA
+
+dat_cor$Secchi_Dep[dat_cor$Secchi_Dep == -99] = NA
+
+dat_cor$Rake_Teeth[dat_cor$Rake_Teeth == -99] = NA
+```
+
+Only the specified columns are modified. Other values are retained.
+
+
+## 7.4 Convert Rake Species Cover to Numeric
+
+The rake species cover columns also contain percentages stored as
+character values.
+
+These columns begin with `Rake_Sp_Cov_`.
+
+As with the vegetation cover columns, we will remove the percent sign
+and convert the values to numeric.
+
+```{r}
+# Convert rake species percent-cover columns to numeric
+dat_cor = dat_cor %>%
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::starts_with("Rake_Sp_Cov_"),
+      ~ as.numeric(stringr::str_remove(as.character(.x), "%"))
+    )
+  )
+```
+
+The resulting values remain on a 0–100 scale.
+
+
+## 7.5 Rename Abbreviated Columns
+
+Some original column names were abbreviated because shapefiles have
+a 10-character limit for attribute field names.
+
+Now that the datasets have been combined, we can use more descriptive
+names to make the attributes easier to understand.
+
+For example:
+
+- `Patch_Leng` becomes `Patch_Length`.
+- `Secchi_Dep` becomes `Secchi_Depth`.
+- `WH_Weevil_Dam` becomes `WH_Weevil_Dam` (already standardized).
+
+Instead of renaming columns by their numerical positions, we will
+rename them using their existing names. This is safer because it does
+not depend on the order of columns in the dataset.
+
+```{r}
+# Create the final dataset
+dat_final = dat_cor
+
+# Rename abbreviated columns
+names(dat_final)[names(dat_final) == "Cover_epi_"] = "Cover_epi_algea"
+names(dat_final)[names(dat_final) == "Cover_wate"] = "Cover_water"
+
+names(dat_final)[names(dat_final) == "Patch_Leng"] = "Patch_Length"
+names(dat_final)[names(dat_final) == "Patch_Widt"] = "Patch_Width"
+names(dat_final)[names(dat_final) == "Patch_Orie"] = "Patch_Orientation"
+
+names(dat_final)[names(dat_final) == "Depth_to_S"] = "Depth_2_SAV"
+names(dat_final)[names(dat_final) == "Secchi_Dep"] = "Secchi_Depth"
+names(dat_final)[names(dat_final) == "Secchi___B"] = "Secchi_Bottom"
+
+names(dat_final)[names(dat_final) == "MatDensity"] = "WH_MatDensity"
+names(dat_final)[names(dat_final) == "Reproductive"] = "FAV_Reproductive"
+names(dat_final)[names(dat_final) == "Canopy"] = "FAV_Canopy"
+names(dat_final)[names(dat_final) == "Color"] = "FAV_Color"
+```
+
+These changes only affect column names. The values within the columns
+are not modified.
+
+
+## 7.6 Check the Final Dataset
+
+Before exporting the cleaned data, we should check that the columns
+have the expected names and data types.
+
+This is an important quality-control step because it helps identify
+unexpected results from the cleaning process.
+
+```{r}
+# Convert the attribute table to a dataframe for inspection
+# This does not modify the original SpatVector
+test = as.data.frame(dat_final)
+
+# Display the structure of the final attribute table
+str(test)
+
+# Display the final column names
+names(dat_final)
+
+# Check the number of observations and columns
+dim(dat_final)
+```
+
+We can also confirm that the percent-cover columns are numeric.
+
+```{r}
+# Identify all vegetation and rake cover columns
+cover_cols = grep(
+  "^Cover_|^Rake_Sp_Cov_",
+  names(test),
+  value = TRUE
+)
+
+# Display the data type of each cover column
+sapply(test[, cover_cols, drop = FALSE], class)
+```
+
+All selected cover columns should now have a numeric data type.
+
+
+## 7.7 Export the Cleaned Dataset
+
+Once the final dataset has been checked, it can be saved for future
+analyses.
+
+Because the standardized column names exceed the 10-character limit
+of shapefiles, we will use a GeoPackage (`.gpkg`) instead.
+
+GeoPackages support longer column names, spatial geometry, and
+attribute data in a single file.
+
+The cleaned dataset will be saved outside the raw-data directory.
+
+```{r, eval=FALSE}
+# Set the output file location
+output_gpkg = file.path(outpath, "all_field_pts.gpkg")
+
+# Export the cleaned SpatVector as a GeoPackage
+terra::writeVector(
+  dat_final,
+  output_gpkg,
+  filetype = "GPKG",
+  overwrite = TRUE
+)
+```
+
+**Note:** This chunk has `eval=FALSE`, meaning it will not run
+automatically when the R Markdown document is knitted.
+
+Once the dataset has been reviewed and approved, remove `eval=FALSE`
+to enable the export.
+
+
+# 8. Outstanding Tasks and Data Verification
+
+The point shapefiles have been combined and standardized, but several
+issues still need to be verified before the dataset is considered final.
+
+This section documents known uncertainties, decisions that still need to
+be made, and additional quality-control checks.
+
+**Important:** Some of these issues may require corrections to the original
+data exports or changes to the cleaning rules in Sections 5 and 6.
+Do not directly edit or overwrite the original raw shapefiles.
+
+## 8.1 Verify the Coordinate Reference System of the 2015 Dataset
+
+- [ ] **Verify the original CRS of the 2015 point shapefile.**
+
+The 2015 shapefile was exported without coordinate reference system (CRS)
+information. In Section 5.1, NAD83 / UTM Zone 10N (EPSG:26910) was
+assigned because the 2014 shapefile was exported from GPS Pathfinder
+using this CRS.
+
+However, the 2015 dataset may actually use WGS84 / UTM Zone 10N
+(EPSG:32610).
+
+**Action needed:**
+- Re-export the 2015 dataset from GPS Pathfinder with the correct CRS
+  information, or verify the CRS using the original export settings.
+- If necessary, update the CRS assignment in Section 5.1.
+- Rerun the data integration workflow after correcting the CRS.
+
+## 8.2 Review the Provisional Assignment Rules
+
+- [ ] **Confirm how to classify observations where `Preassigne = No`
+  and `newPatch = No`.**
+
+In Section 5.6, these observations are currently classified as `Revisit`.
+
+This rule was not established by the research group and is based on the
+following interpretation:
+
+- `Preassigne = No`: The location was not randomly preassigned.
+- `newPatch = No`: The observation was not collected at a new patch.
+
+Therefore, the observation was assumed to be a revisit.
+
+However, the correct category may be `Revisit` or `NA` if the type of
+visit cannot be determined.
+
+**Action needed:**
+- Discuss this rule with the research group.
+- Determine whether `Revisit` is an appropriate classification.
+- Update Section 5.6 if the group decides to use a different rule.
+
+- [ ] **Review the related rule for `Preassigne = No` and missing
+  `newPatch` values.**
+
+These observations are also currently classified as `Revisit` in
+Section 5.6. Confirm whether this interpretation is appropriate when
+new-patch status was not recorded.
+
+## 8.3 Verify GPS Time Values and Standardize Time Format
+
+The `GPS_Time` column requires additional quality control before the
+dataset is finalized.
+
+### 8.3.1 Check for Incorrect GPS Times
+
+- [ ] **Identify observations with GPS times outside approximately
+  7:00 AM to 5:00 PM.**
+
+Field observations were generally collected between approximately
+7:00 AM and 5:00 PM.
+
+Times outside this range may indicate that the GPS receiver clock or
+time settings were not handled correctly when the data were exported
+from GPS Pathfinder.
+
+**Action needed:**
+- Examine `GPS_Time` values across all years.
+- Identify observations with times earlier than 7:00 AM or later than
+  approximately 5:00 PM.
+- Determine which original shapefiles contain potentially incorrect times.
+- Reprocess and re-export affected datasets from GPS Pathfinder using
+  the correct time settings.
+- Rerun the integration workflow with the corrected files.
+
+**Note:** Times outside the expected range should be flagged for review,
+not automatically changed or deleted. They may indicate an export issue,
+but the original records need to be checked.
+
+### 8.3.2 Decide on a Standard GPS Time Format
+
+- [ ] **Select a consistent time format for `GPS_Time`.**
+- [ ] **Confirm the time zone used in the original GPS exports.**
+
+The final dataset should use a consistent time format across all years.
+
+Decisions still needed:
+
+- **Clock format:** 12-hour (AM/PM) or 24-hour.
+- **Time zone:** UTC or Pacific Time.
+- **Time zone documentation:** If Pacific Time is selected, account for
+  Pacific Standard Time (PST) and Pacific Daylight Time (PDT).
+
+**Action needed:**
+- Verify how GPS Pathfinder recorded and exported the original times.
+- Decide on the standard format and time zone.
+- Add code to Section 6 to standardize `GPS_Time`.
+- Document the final time format and time zone in the dataset metadata.
+
+
+## 8.4 Verify Combined Comments and Photo Information
+
+- [ ] **Review observations with values in multiple comment columns.**
+
+Section 5.2 combines `Comments` and `Comment`, prioritizing `Comments`
+when both columns contain values.
+
+Confirm whether this priority is appropriate and whether any observations
+contain different, useful comments in both columns.
+
+- [ ] **Review observations with multiple photo fields.**
+
+Section 5.4 combines photo information from several differently named
+columns.
+
+When multiple photo columns contain values, the current code retains
+the first nonmissing value.
+
+Confirm whether any observations contain multiple distinct photo
+references that should be preserved.
+
+## 8.5 Verify the Final Dataset Before Release
+
+- [ ] **Confirm that all observations were retained during integration.**
+
+Compare the total number of observations in the original point shapefiles
+with the number of observations in the final combined dataset.
+
+- [ ] **Verify standardized categorical values.**
+
+Check that the final `PositionIn`, `Assignment`, `WH_Weevil_Dam`, and
+`Reproductive` columns contain the intended categories.
+
+- [ ] **Verify rake species and cover columns.**
+
+Confirm that species names and their corresponding percent-cover values
+are correctly paired, particularly for the two years containing six
+rake species.
+
+- [ ] **Check numeric fields and missing values.**
+
+Confirm that percent-cover columns are numeric and that missing-value
+codes such as `-99` have been handled appropriately.
+
+- [ ] **Finalize column names and dataset documentation.**
+
+Review the final column names, definitions, units, and categorical
+values before preparing metadata and distributing the cleaned dataset.
